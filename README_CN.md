@@ -1,3 +1,13 @@
+<p align="center"><img src="assets/branding/miora-logo.jpg" alt="Miora logo" width="240"></p>
+
+# Miora
+
+基于 [uni-api](https://github.com/yym68686/uni-api) 独立开发的 AI API 网关。
+
+Miora 保留上游历史、版权声明与 Apache-2.0 许可证。下方暂保留上游文档，部分名称及部署示例仍指向 uni-api。
+
+---
+
 # uni-api
 
 <p align="center">
