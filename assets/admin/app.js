@@ -58,10 +58,76 @@ function usageQuery() {
   return params;
 }
 const usageFilters = () => ({ days: usageDays, model: usageModel, channel: usageChannel, group: usageGroup });
+async function openUpdateDialog() {
+  const modal = document.querySelector('#editor-dialog'), content = document.querySelector('#dialog-content');
+  content.innerHTML = `<div class="dialog-header"><h2 id="dialog-title">版本检查与更新</h2><button class="icon-button" type="button" id="dialog-close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${loading('正在检查 GitHub 最新版本…')}</div>`;
+  content.querySelector('#dialog-close').onclick = () => modal.close();
+  if (!modal.open) modal.showModal();
+  try {
+    const info = await api.get('/update');
+    const shortCur = (info.current_commit || 'unknown').slice(0, 8);
+    const shortLatest = (info.latest_commit || '—').slice(0, 8);
+    const statusBadge = info.has_update ? badge('发现新版本', 'orange') : info.latest_commit ? badge('已是最新', 'green') : badge('离线/待检查', 'subtle');
+    const dockerCmd = info.docker_command || 'docker compose pull && docker compose up -d';
+    content.innerHTML = `
+      <div class="dialog-header">
+        <div><h2 id="dialog-title">版本检查与更新</h2><p class="subline">仓库：${esc(info.repo || 'Mitasul/miora')} · 当前版本 v${esc(info.version || '0.1.99')}</p></div>
+        <button class="icon-button" type="button" id="dialog-close" aria-label="关闭">${icon('close')}</button>
+      </div>
+      <div class="dialog-body">
+        <div class="form-section">
+          ${definition([
+            ['状态', statusBadge],
+            ['当前 Commit', `<code class="mono">${esc(shortCur)}</code>`],
+            ['最新 Commit', `<code class="mono">${esc(shortLatest)}</code>${info.latest_date ? ` <span class="subline">(${esc(stamp(info.latest_date))})</span>` : ''}`],
+            ['最新更新说明', esc(info.latest_message || info.check_error || '—')],
+          ])}
+        </div>
+        <div class="form-section">
+          <div class="form-section-header"><h2>Docker 部署秒级更新命令</h2><p>在服务器宿主机执行以下命令即可拉取 GitHub 云端预编译镜像并重启：</p></div>
+          <div class="toolbar"><code class="mono">${esc(dockerCmd)}</code><button class="button small" type="button" id="copy-docker-update">${icon('copy')}复制命令</button></div>
+        </div>
+        <div id="update-output" hidden></div>
+      </div>
+      <div class="dialog-footer">
+        <button class="button" type="button" id="dialog-cancel">关闭</button>
+        ${info.git_available && !info.in_docker ? `<button class="button primary" type="button" id="run-git-update">${icon('upload')}一键拉取最新代码 (Git Pull)</button>` : ''}
+      </div>`;
+    content.querySelector('#dialog-close').onclick = () => modal.close();
+    content.querySelector('#dialog-cancel').onclick = () => modal.close();
+    content.querySelector('#copy-docker-update')?.addEventListener('click', async () => {
+      try { await navigator.clipboard.writeText(dockerCmd); toast('已复制 Docker 更新命令'); }
+      catch { toast('复制失败，请手动选中复制'); }
+    });
+    content.querySelector('#run-git-update')?.addEventListener('click', async event => {
+      const btn = event.currentTarget;
+      const outBox = content.querySelector('#update-output');
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner"></span>正在拉取更新…`;
+      try {
+        const res = await api.post('/update', {});
+        outBox.hidden = false;
+        outBox.innerHTML = notice(`${res.message || ''}${res.output ? `\n${res.output}` : ''}`, res.ok ? 'success' : 'warning');
+        if (res.ok) toast('代码已拉取至最新提交');
+      } catch (err) {
+        outBox.hidden = false;
+        outBox.innerHTML = notice(err.message, 'danger');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = `${icon('upload')}一键拉取最新代码 (Git Pull)`;
+      }
+    });
+  } catch (err) {
+    content.innerHTML = `<div class="dialog-header"><h2 id="dialog-title">版本检查与更新</h2><button class="icon-button" type="button" id="dialog-close" aria-label="关闭">${icon('close')}</button></div><div class="dialog-body">${failure(err)}</div><div class="dialog-footer"><button class="button" type="button" id="dialog-cancel">关闭</button></div>`;
+    content.querySelector('#dialog-close').onclick = () => modal.close();
+    content.querySelector('#dialog-cancel').onclick = () => modal.close();
+  }
+}
+
 async function overview() {
   const [data, usageResult] = await Promise.all([read('/overview'), read(`/usage?${usageQuery()}`).then(value => ({ value }), error => ({ error }))]);
   state = { overview: data, usage: usageResult.value };
-  return head() + (data.configuration_ready === false ? notice('网关配置未就绪，请检查渠道设置。', 'warning') : '') +
+  return head(button('检查更新', 'check-update', 'upload')) + (data.configuration_ready === false ? notice('网关配置未就绪，请检查渠道设置。', 'warning') : '') +
     `<div class="overview-inventory">${badge(`${fmt(data.provider_count)} 个渠道`)}${badge(`${fmt(data.model_count)} 个配置模型`)}${badge(`${fmt(data.api_key_count)} 个 API Key`)}<a href="#channels">管理渠道${icon('arrow')}</a></div>` +
     (usageResult.error ? `<section class="card">${failure(usageResult.error)}</section>` : usageDashboard(usageResult.value, usageFilters()));
 }
@@ -270,7 +336,7 @@ function bindPage() {
 main.addEventListener('click', async event => {
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
   const index = target.dataset.index === undefined ? undefined : Number(target.dataset.index);
-  const actions = { 'channel-accounts': () => openChannelAccounts(state.channels.channels[index].provider), 'test-channel': () => openChannelTestDialog(state.channels.channels[index]), 'batch-test-channels': batchTestChannels, 'toggle-channel': () => mutateChannels([state.channels.channels[index].provider], { enabled: state.channels.channels[index].enabled === false }), 'select-channels': () => { for (const box of main.querySelectorAll('[data-channel-select]')) if (!box.closest('tr').hidden) box.checked = true; }, 'enable-channels': () => mutateChannels(selectedChannels(), { enabled: true }), 'disable-channels': () => mutateChannels(selectedChannels(), { enabled: false }), 'group-channels': () => groupChannels(), 'manage-groups': () => openGroupManager({ onChanged: render }), refresh: () => authenticated ? render() : window.location.reload(), 'create-channel': () => editChannel(), 'create-channel-from-plugin': async () => { const plugin = state.plugins.plugins[index]; const initialType = plugin.kind === 'service' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`; window.location.hash = 'channels'; await render(); await editChannel(undefined, initialType); }, 'edit-channel': () => editChannel(index), 'delete-channel': () => deleteChannel(index), 'copy-channel': () => copyChannel(index), 'channel-usage': () => { usageChannel = state.channels.channels[index].provider; usageModel = ''; usageGroup = 'model'; window.location.hash = 'overview'; }, 'create-plugin': () => openPluginUpload(state.plugins.plugins, render), 'upload-plugin-update': () => openPluginUpload(state.plugins.plugins, render, state.plugins.plugins[index]), 'plugin-group': () => { pluginGroup = target.dataset.group === 'builtin' ? 'builtin' : 'installed'; return render(); }, 'usage-detail': () => openUsageDetail((usageGroup === 'channel' ? state.usage.channels : state.usage.usage)[index]), 'plugin-detail': () => pluginDetail(index), 'toggle-plugin': () => togglePlugin(index), 'create-interceptor': () => editInterceptor(), 'edit-interceptor': () => editInterceptor(index), 'toggle-interceptor': () => mutateInterceptor(index, 'toggle'), 'delete-interceptor': () => mutateInterceptor(index, 'delete') };
+  const actions = { 'check-update': openUpdateDialog, 'channel-accounts': () => openChannelAccounts(state.channels.channels[index].provider), 'test-channel': () => openChannelTestDialog(state.channels.channels[index]), 'batch-test-channels': batchTestChannels, 'toggle-channel': () => mutateChannels([state.channels.channels[index].provider], { enabled: state.channels.channels[index].enabled === false }), 'select-channels': () => { for (const box of main.querySelectorAll('[data-channel-select]')) if (!box.closest('tr').hidden) box.checked = true; }, 'enable-channels': () => mutateChannels(selectedChannels(), { enabled: true }), 'disable-channels': () => mutateChannels(selectedChannels(), { enabled: false }), 'group-channels': () => groupChannels(), 'manage-groups': () => openGroupManager({ onChanged: render }), refresh: () => authenticated ? render() : window.location.reload(), 'create-channel': () => editChannel(), 'create-channel-from-plugin': async () => { const plugin = state.plugins.plugins[index]; const initialType = plugin.kind === 'service' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`; window.location.hash = 'channels'; await render(); await editChannel(undefined, initialType); }, 'edit-channel': () => editChannel(index), 'delete-channel': () => deleteChannel(index), 'copy-channel': () => copyChannel(index), 'channel-usage': () => { usageChannel = state.channels.channels[index].provider; usageModel = ''; usageGroup = 'model'; window.location.hash = 'overview'; }, 'create-plugin': () => openPluginUpload(state.plugins.plugins, render), 'upload-plugin-update': () => openPluginUpload(state.plugins.plugins, render, state.plugins.plugins[index]), 'plugin-group': () => { pluginGroup = target.dataset.group === 'builtin' ? 'builtin' : 'installed'; return render(); }, 'usage-detail': () => openUsageDetail((usageGroup === 'channel' ? state.usage.channels : state.usage.usage)[index]), 'plugin-detail': () => pluginDetail(index), 'toggle-plugin': () => togglePlugin(index), 'create-interceptor': () => editInterceptor(), 'edit-interceptor': () => editInterceptor(index), 'toggle-interceptor': () => mutateInterceptor(index, 'toggle'), 'delete-interceptor': () => mutateInterceptor(index, 'delete') };
   if (!actions[target.dataset.action]) return;
   target.disabled = true;
   try { await actions[target.dataset.action](); }
@@ -293,6 +359,7 @@ document.addEventListener('keydown', event => {
     else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
   }
 });
+document.querySelector('#check-update')?.addEventListener('click', openUpdateDialog);
 document.querySelector('#logout').addEventListener('click', () => confirmAction({ title: '退出管理会话', message: '确认退出？未保存的表单修改将丢失。', label: '退出登录', action: async () => { await api.post('/logout'); api.setSession(null); window.location.replace('/login'); } }));
 window.addEventListener('hashchange', () => { if (authenticated) render(); });
 mountIcons();

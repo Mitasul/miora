@@ -24,6 +24,8 @@ pub(super) async fn handle(state: &AppState, request: Request, path: &str) -> Re
             super::accounts::change(state, request).await
         }
         (Method::GET, "/admin/api/overview") => overview(state).await,
+        (Method::GET, "/admin/api/update") => check_update(state).await,
+        (Method::POST, "/admin/api/update") => apply_update(state).await,
         (Method::GET, "/admin/api/channels") => channels(state).await,
         (Method::GET, "/admin/api/api-keys") => api_keys(state).await,
         (Method::GET, "/admin/api/backend-logs") => super::backend_logs::read(request.uri()),
@@ -70,6 +72,7 @@ pub(super) async fn handle(state: &AppState, request: Request, path: &str) -> Re
         (
             _,
             "/admin/api/overview"
+            | "/admin/api/update"
             | "/admin/api/channels"
             | "/admin/api/virtual-models"
             | "/admin/api/channels/keys"
@@ -122,6 +125,166 @@ async fn overview(state: &AppState) -> ApiResult {
         "api_key_count":keys,"provider_count":providers,"model_count":models,
         "stats":sanitize(stats),"runtime_details":state.runtime_observability().await,
         "capabilities":{"channels_write":matches!(&state.config_publisher.source, RuntimeConfigSource::File(_)),"api_keys_write":matches!(&state.config_publisher.source, RuntimeConfigSource::File(_)),"settings_write":matches!(&state.config_publisher.source, RuntimeConfigSource::File(_)),"request_logs":false,"admin_audit":true,"plugins":true}
+    }))
+}
+
+fn run_git_cmd(args: &[&str]) -> Option<String> {
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(args);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000);
+    }
+    let out = cmd.output().ok()?;
+    if out.status.success() {
+        Some(String::from_utf8_lossy(&out.stdout).trim().to_owned())
+    } else {
+        None
+    }
+}
+
+async fn check_update(state: &AppState) -> ApiResult {
+    let version = env!("CARGO_PKG_VERSION");
+    let git_available = std::path::Path::new(".git").exists();
+    let in_docker = std::path::Path::new("/.dockerenv").exists();
+    let current_commit = if git_available {
+        tokio::task::spawn_blocking(|| run_git_cmd(&["rev-parse", "HEAD"]))
+            .await
+            .ok()
+            .flatten()
+    } else {
+        None
+    }
+    .or_else(|| option_env!("SOURCE_COMMIT").map(str::to_owned))
+    .unwrap_or_else(|| "unknown".into());
+
+    let mut latest_commit = String::new();
+    let mut latest_message = String::new();
+    let mut latest_date = String::new();
+    let mut check_error = String::new();
+
+    match state
+        .backend_client
+        .get("https://api.github.com/repos/Mitasul/miora/commits/main")
+        .header("User-Agent", "miora-gateway")
+        .header("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(8))
+        .send()
+        .await
+    {
+        Ok(resp) if resp.status().is_success() => {
+            if let Ok(body) = resp.json::<Value>().await {
+                latest_commit = body["sha"].as_str().unwrap_or_default().to_owned();
+                latest_message = body
+                    .pointer("/commit/message")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned();
+                latest_date = body
+                    .pointer("/commit/committer/date")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+        }
+        Ok(resp) => {
+            check_error = format!("GitHub API 返回 HTTP {}", resp.status().as_u16());
+        }
+        Err(err) => {
+            check_error = format!("无法连接 GitHub API: {err}");
+        }
+    }
+
+    if latest_commit.is_empty() && git_available {
+        if let Ok((sha, msg, date)) = tokio::task::spawn_blocking(|| {
+            let _ = run_git_cmd(&["fetch", "origin", "main"]);
+            let sha = run_git_cmd(&["rev-parse", "origin/main"]).unwrap_or_default();
+            let msg = run_git_cmd(&["log", "-1", "--format=%s", "origin/main"]).unwrap_or_default();
+            let date =
+                run_git_cmd(&["log", "-1", "--format=%cI", "origin/main"]).unwrap_or_default();
+            (sha, msg, date)
+        })
+        .await
+        {
+            if !sha.is_empty() {
+                latest_commit = sha;
+                latest_message = msg;
+                latest_date = date;
+                check_error.clear();
+            }
+        }
+    }
+
+    let has_update = !latest_commit.is_empty()
+        && !current_commit.is_empty()
+        && current_commit != "unknown"
+        && !latest_commit.starts_with(&current_commit)
+        && !current_commit.starts_with(&latest_commit);
+
+    Ok(json!({
+        "version": version,
+        "repo": "Mitasul/miora",
+        "current_commit": current_commit,
+        "latest_commit": latest_commit,
+        "latest_message": latest_message,
+        "latest_date": latest_date,
+        "has_update": has_update,
+        "git_available": git_available,
+        "in_docker": in_docker,
+        "check_error": check_error,
+        "docker_command": "docker compose pull && docker compose up -d",
+    }))
+}
+
+async fn apply_update(_state: &AppState) -> ApiResult {
+    let git_available = std::path::Path::new(".git").exists();
+    let in_docker = std::path::Path::new("/.dockerenv").exists();
+    if in_docker || !git_available {
+        return Ok(json!({
+            "ok": false,
+            "in_docker": true,
+            "docker_command": "docker compose pull && docker compose up -d",
+            "message": "当前为 Docker 容器或独立二进制部署，请在宿主机执行：docker compose pull && docker compose up -d"
+        }));
+    }
+    let result = tokio::task::spawn_blocking(|| {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["pull", "--ff-only", "origin", "main"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        match cmd.output() {
+            Ok(out) => {
+                let stdout = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+                let stderr = String::from_utf8_lossy(&out.stderr).trim().to_owned();
+                let combined = if stderr.is_empty() {
+                    stdout
+                } else if stdout.is_empty() {
+                    stderr
+                } else {
+                    format!("{stdout}\n{stderr}")
+                };
+                let head = run_git_cmd(&["rev-parse", "HEAD"]).unwrap_or_default();
+                (out.status.success(), combined, head)
+            }
+            Err(err) => (false, format!("执行 git pull 失败: {err}"), String::new()),
+        }
+    })
+    .await
+    .map_err(|_| unavailable())?;
+
+    let (ok, output, current_commit) = result;
+    Ok(json!({
+        "ok": ok,
+        "output": output,
+        "current_commit": current_commit,
+        "message": if ok { "Git 仓库已拉取最新代码（如修改了后端源码请重新编译或拉取最新镜像重启）" } else { "拉取更新未成功，请检查输出信息" }
     }))
 }
 

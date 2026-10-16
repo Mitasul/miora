@@ -162,6 +162,8 @@ async fn handle_inner(state: &AppState, request: Request) -> Response<Body> {
             "channel_parameter_schema"
         } else if path.starts_with("/admin/api/channels") {
             "channels_mutation"
+        } else if path == "/admin/api/update" {
+            "system_update"
         } else {
             "unknown_mutation"
         };

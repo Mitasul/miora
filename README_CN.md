@@ -57,3 +57,10 @@ api_keys:
 ```
 
 更多详细说明请查阅 **[README.md](./README.md)** 与 **[docs/miora-migration.md](docs/miora-migration.md)**。
+
+---
+
+## 致谢与许可证
+
+- 本项目基于 [uni-api](https://github.com/yym68686/uni-api) 构建，并在演进过程中借鉴了 [Zoaholic](https://github.com/HCPTangHY/Zoaholic) 的部分功能与交互思路（如 OAuth 凭据管理、渠道插件化扩展、参数策略与模型批量测活体验）。
+- 遵循 **Apache-2.0 License** 开源许可证（详见 [docs/dependency-licenses.md](docs/dependency-licenses.md)）。
