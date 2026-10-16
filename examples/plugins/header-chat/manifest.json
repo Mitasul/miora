@@ -1,0 +1,15 @@
+{
+  "id": "header-chat",
+  "name": "Header-auth Chat forwarding sample",
+  "version": "1.0.0",
+  "api_version": 1,
+  "description": "Independent real HTTP forwarding adapter with X-Sample-Api-Key upstream authentication. Ordinary compatible suppliers should use generic channel instances.",
+  "config_schema": [
+    {"key":"base_url","label":"Upstream API base URL (including /v1)","type":"string","required":true,"secret":false},
+    {"key":"api_key","label":"Upstream X-Sample-Api-Key credential","type":"string","required":true,"secret":true},
+    {"key":"timeout_seconds","label":"Upstream socket timeout (1-600 seconds)","type":"integer","default":120,"required":false,"secret":false}
+  ],
+  "auth":{"type":"api_key","config_key":"api_key","header":"X-Sample-Api-Key"},
+  "capabilities":{"endpoints":["/v1/chat/completions"],"streaming":true,"model_discovery":true},
+  "models":[]
+}

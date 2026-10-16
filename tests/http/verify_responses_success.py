@@ -69,10 +69,10 @@ def main():
         cfg = {"providers": [{"provider": name, "engine": engine,
             "base_url": f"http://127.0.0.1:{upstream.server_port}/{name}/v1/responses", "api": "fixture",
             "model": ["gpt-6-astra"], "preferences": {"normalize_responses_custom_tool_call_ids": name == "normalized"}}
-            for name, engine in variants], "api_keys": [{"api": "fixture-admin", "model": ["all"]}],
+            for name, engine in variants], "api_keys": [{"api": "fixture-admin", "role": "admin", "model": ["all"]}],
             "preferences": {"AUTO_RETRY": False}}
         (root / "api.json").write_text(json.dumps(cfg))
-        env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "TMPDIR", "LANG", "DYLD_LIBRARY_PATH")}
+        env = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "HOME", "TMPDIR", "LANG", "DYLD_LIBRARY_PATH", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC")}
         env.update(PORT=str(port), DISABLE_DATABASE="true", UNI_API_CONFIG_PATH=str(root / "api.json"),
             RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root / "snapshot.json"), UNI_API_SHARED_MEMORY_RESERVATION_PATH=str(root / "ledger"),
             RUST_REQUEST_SPOOL_DIRECTORY=str(root / "body-spool"), RUST_REQUEST_SPOOL_DISK_RESERVE_BPS="0", RUST_REQUEST_SPOOL_INODE_RESERVE_BPS="0",
@@ -92,7 +92,7 @@ def main():
             return response.status, raw
 
         with (root / "runtime.log").open("w") as log:
-            process = subprocess.Popen([str(Path(sys.argv[1]).resolve())], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(Path(sys.argv[1]).resolve())], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:

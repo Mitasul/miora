@@ -115,7 +115,7 @@ def verify(binary, endpoint, streaming, hedging, idempotent=False):
              "preferences": {"cooldown_period": 0, "timeout_policy": {"default": {"first_byte": 0.18 if hedging else 3, "total": 5}}}}
             for name, path in [("z-first", "first"), ("a-second", "second")]],
             "api_keys": [
-                {"api": "fixture-key", "model": ["fixture-child/*", "z-first/*"], "preferences": {"AUTO_RETRY": True}},
+                {"api": "fixture-key", "role": "admin", "model": ["fixture-child/*", "z-first/*"], "preferences": {"AUTO_RETRY": True}},
                 {"api": "fixture-child", "model": ["z-first/*", "a-second/*", "z-first/*"]}],
             "preferences": {"hedging": {"enabled": hedging, "max_inflight_attempts": 2}}}
         config_file = root / "api.json"
@@ -128,7 +128,7 @@ def verify(binary, endpoint, streaming, hedging, idempotent=False):
         env.update(FACTS_S3_ENDPOINT=f"http://127.0.0.1:{upstream.server_port}", FACTS_S3_BUCKET="fixture",
                    FACTS_S3_ACCESS_KEY_ID="fixture-access",FACTS_S3_SECRET_ACCESS_KEY="fixture-secret",FACTS_S3_SPOOL_DIR=str(root/"facts"))
         with (root / "log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:
@@ -204,8 +204,8 @@ def verify(binary, endpoint, streaming, hedging, idempotent=False):
                 assert by_provider["a-second"]["billing_request_ids"]==["client:receipt-second"],by_provider
                 if not hedging:
                     assert by_provider["z-first"]["billing_request_ids"]==["client:receipt-first"],by_provider
-                    assert by_provider["z-first"]["upstream_error_sha256"]=="7650844e093da022f530f60d448c6e401ca17d5efd97d38978acf34e43cdcb71",by_provider
-                assert by_provider["a-second"]["upstream_error_sha256"]=="",by_provider
+                    assert by_provider["z-first"]["trace_detail"]["error"]["error_code"]=="INSUFFICIENT_BALANCE",by_provider
+                assert all("upstream_error_sha256" not in event for event in bills.values())
                 assert all(event["key_id"]=="key-"+hashlib.sha256(b"fixture-key").hexdigest() for event in bills.values())
                 assert all(event["upstream_key_hash"]==hashlib.sha256(b"fixture-upstream-key").hexdigest() for event in bills.values())
                 assert all(event["request_id"]==request_id and event["model"]=="m" and event["endpoint"]==endpoint for event in bills.values())

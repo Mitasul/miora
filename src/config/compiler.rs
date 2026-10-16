@@ -1,8 +1,8 @@
 use crate::config::snapshot::SNAPSHOT_SCHEMA_VERSION;
 use crate::runtime::clock::unix_millis;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use url::Url;
 
 pub fn compile_snapshot_bytes(raw: &[u8], database_disabled: bool) -> Result<Vec<u8>, String> {
@@ -15,12 +15,61 @@ pub fn compile_snapshot_bytes(raw: &[u8], database_disabled: bool) -> Result<Vec
         .as_object()
         .ok_or_else(|| "uni-api configuration must be a mapping".to_owned())?;
 
+    for key in ["providers", "api_keys"] {
+        if root.get(key).is_some_and(|value| !value.is_array()) {
+            return Err(format!("configuration {key} must be an array"));
+        }
+        for row in root
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if key == "providers" {
+                crate::providers::reliability::validate(
+                    row.get("preferences").unwrap_or(&Value::Null),
+                )?;
+                if row.get("disabled_key_positions").is_some_and(|positions| {
+                    positions.as_array().is_none_or(|positions| {
+                        positions
+                            .iter()
+                            .any(|position| position.as_u64().is_none_or(|position| position == 0))
+                    })
+                }) {
+                    return Err(
+                        "disabled_key_positions must contain positive one-based positions".into(),
+                    );
+                }
+            }
+            if let Some(groups) = row
+                .get("groups")
+                .or_else(|| row.pointer("/preferences/groups"))
+            {
+                if !valid_groups(groups) {
+                    return Err(format!("configuration {key} has invalid groups"));
+                }
+            }
+            if row
+                .get("enabled")
+                .is_some_and(|enabled| !enabled.is_boolean())
+            {
+                return Err(format!("configuration {key} enabled must be a boolean"));
+            }
+        }
+    }
+    if root
+        .get("preferences")
+        .is_some_and(|value| !value.is_object())
+    {
+        return Err("configuration preferences must be an object".into());
+    }
     let mut providers = root
         .get("providers")
         .and_then(Value::as_array)
         .map(|items| {
             items
                 .iter()
+                .filter(|item| item.get("enabled").and_then(Value::as_bool) != Some(false))
                 .filter_map(compile_provider)
                 .collect::<Vec<_>>()
         })
@@ -29,7 +78,11 @@ pub fn compile_snapshot_bytes(raw: &[u8], database_disabled: bool) -> Result<Vec
     // same immutable provider graph so every Rust endpoint can route them.
     if let Some(video) = root.get("video_providers").and_then(Value::as_array) {
         for item in video {
-            if let Some(mut provider) = compile_video_provider(item) {
+            if let Some(mut provider) = (item.get("enabled").and_then(Value::as_bool)
+                != Some(false))
+            .then(|| compile_video_provider(item))
+            .flatten()
+            {
                 let name = provider
                     .get("name")
                     .and_then(Value::as_str)
@@ -54,12 +107,32 @@ pub fn compile_snapshot_bytes(raw: &[u8], database_disabled: bool) -> Result<Vec
         })
         .unwrap_or_default();
     expand_api_key_aliases(&mut api_keys)?;
-    if api_keys.is_empty() {
-        return Err("uni-api configuration contains no usable API keys".into());
+    if root
+        .get("providers")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("enabled").and_then(Value::as_bool) != Some(false))
+        })
+        && providers.is_empty()
+    {
+        return Err("configuration contains no usable providers".into());
     }
-    if providers.is_empty() {
-        return Err("uni-api configuration contains no usable providers".into());
+    if root
+        .get("api_keys")
+        .and_then(Value::as_array)
+        .is_some_and(|items| {
+            items
+                .iter()
+                .any(|key| key.get("enabled").and_then(Value::as_bool) != Some(false))
+        })
+        && api_keys.is_empty()
+    {
+        return Err("configuration contains no usable API keys".into());
     }
+    // An intentionally empty managed configuration is valid. With zero API
+    // keys authorization remains closed; with zero providers routing fails.
 
     let mut snapshot = json!({
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
@@ -70,14 +143,19 @@ pub fn compile_snapshot_bytes(raw: &[u8], database_disabled: bool) -> Result<Vec
         "providers": providers,
         "api_config": config,
     });
-    let mut revision_payload = snapshot.clone();
-    revision_payload
-        .as_object_mut()
-        .expect("snapshot object")
-        .remove("generated_unix_ms");
-    let canonical = serde_json::to_vec(&revision_payload)
-        .map_err(|error| format!("encode runtime configuration revision: {error}"))?;
-    let revision = format!("{:x}", Sha256::digest(canonical));
+    let virtual_models = crate::config::virtual_models::compile(&config)?;
+    if virtual_models
+        .as_object()
+        .is_some_and(|models| !models.is_empty())
+    {
+        snapshot["preferences"]["__virtual_models"] = virtual_models;
+    }
+    static REVISION: AtomicU64 = AtomicU64::new(0);
+    let revision = format!(
+        "{}-{}",
+        unix_millis(),
+        REVISION.fetch_add(1, Ordering::Relaxed)
+    );
     snapshot
         .as_object_mut()
         .expect("snapshot object")
@@ -160,7 +238,23 @@ pub(crate) fn compile_provider(value: &Value) -> Option<Value> {
     // Replacing a project-backed URL with the public Google endpoint would
     // silently bypass an operator-configured gateway.
     let base_url = scalar_string(item.get("base_url").unwrap_or(&Value::Null));
-    let (models, model_order) = compile_models(item.get("model"));
+    let (mut models, mut model_order) = compile_models(item.get("model"));
+    if let Some(suffixes) = item
+        .get("preferences")
+        .and_then(|preferences| preferences.get("reasoning_suffixes"))
+        .and_then(Value::as_object)
+    {
+        let originals = models.clone();
+        for (model, upstream) in originals {
+            for suffix in suffixes.keys() {
+                let alias = format!("{model}{suffix}");
+                if !models.contains_key(&alias) {
+                    models.insert(alias.clone(), upstream.clone());
+                    model_order.push(alias);
+                }
+            }
+        }
+    }
     if models.is_empty() {
         return None;
     }
@@ -178,6 +272,9 @@ pub(crate) fn compile_provider(value: &Value) -> Option<Value> {
     // the immutable preferences map makes the Rust snapshot forward compatible
     // without dropping unknown provider options during compilation.
     for field in [
+        "groups",
+        "channel_plugin",
+        "plugin_config",
         "tools",
         "image",
         "video_route",
@@ -194,17 +291,22 @@ pub(crate) fn compile_provider(value: &Value) -> Option<Value> {
             preferences.insert(field.to_owned(), value.clone());
         }
     }
-    let engine = item
-        .get("engine")
+    let engine = preferences
+        .get("channel_plugin")
         .and_then(Value::as_str)
-        .map(str::to_owned)
-        .unwrap_or_else(|| infer_engine(&base_url));
+        .map(|id| format!("plugin:{id}"))
+        .unwrap_or_else(|| {
+            item.get("engine")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .unwrap_or_else(|| infer_engine(&base_url))
+        });
     let aws_access_key = scalar_string(item.get("aws_access_key").unwrap_or(&Value::Null));
     let aws_secret_key = scalar_string(item.get("aws_secret_key").unwrap_or(&Value::Null));
     let aws_session_token = scalar_string(item.get("aws_session_token").unwrap_or(&Value::Null));
     let client_email = scalar_string(item.get("client_email").unwrap_or(&Value::Null));
     let private_key = scalar_string(item.get("private_key").unwrap_or(&Value::Null));
-    let provider_api = match item.get("api") {
+    let mut provider_api = match item.get("api") {
         Some(value) if !value.is_null() => value.clone(),
         _ if engine.eq_ignore_ascii_case("aws") && !aws_access_key.trim().is_empty() => {
             Value::String(aws_access_key.clone())
@@ -217,8 +319,23 @@ pub(crate) fn compile_provider(value: &Value) -> Option<Value> {
         {
             Value::String("__vertex_oauth__".into())
         }
+        _ if item.get("channel_plugin").and_then(Value::as_str).is_some()
+            || engine.starts_with("plugin:") =>
+        {
+            Value::String("__channel_plugin__".into())
+        }
         _ => Value::Null,
     };
+    if let Some(disabled) = item.get("disabled_key_positions").and_then(Value::as_array) {
+        provider_api = json!(crate::config::snapshot::provider_api_keys(&provider_api)
+            .into_iter()
+            .enumerate()
+            .filter(|(index, _)| !disabled
+                .iter()
+                .any(|position| position.as_u64() == Some((*index + 1) as u64)))
+            .map(|(_, key)| key)
+            .collect::<Vec<_>>());
+    }
     let region = scalar_string(item.get("region").unwrap_or(&Value::Null));
     let region = if region.is_empty() {
         "global".to_owned()
@@ -266,6 +383,9 @@ pub(crate) fn infer_engine(base_url: &str) -> String {
     }
     if lower.contains("/v1/messages") || lower.contains("/claude/") {
         return "claude".into();
+    }
+    if lower.contains("cloudcode-pa.googleapis.com") {
+        return "antigravity".into();
     }
     if lower.contains("/v1beta") || lower.contains("generativelanguage.googleapis.com") {
         return "gemini".into();
@@ -417,6 +537,9 @@ pub(crate) fn deduplicate_values(values: Vec<Value>) -> Vec<Value> {
 
 pub(crate) fn compile_api_key(value: &Value, _database_disabled: bool) -> Option<Value> {
     let item = value.as_object()?;
+    if item.get("enabled").and_then(Value::as_bool) == Some(false) {
+        return None;
+    }
     let token = scalar_string(item.get("api")?).trim().to_owned();
     if token.is_empty() {
         return None;
@@ -457,14 +580,34 @@ pub(crate) fn compile_api_key(value: &Value, _database_disabled: bool) -> Option
     // remain useful for fast matching, while this metadata lets the native
     // router traverse parent/child key boundaries without inventing channels.
     preferences.insert("__route_graph".into(), Value::Array(model_rules.clone()));
+    for field in ["name", "groups"] {
+        if let Some(value) = item.get(field) {
+            preferences.insert(field.into(), value.clone());
+        }
+    }
     Some(json!({
         "token": token,
         "model_rules": model_rules,
-        "role": item.get("role").and_then(Value::as_str).unwrap_or_else(|| token.get(..8).unwrap_or(&token)),
+        "role": item.get("role").and_then(Value::as_str).unwrap_or("user"),
         "weights": weights,
         "preferences": preferences,
         "native_paid_state_safe": true,
     }))
+}
+
+pub(crate) fn valid_groups(value: &Value) -> bool {
+    value.as_array().is_some_and(|groups| {
+        !groups.is_empty()
+            && groups.len() <= 32
+            && groups.iter().all(|group| {
+                group.as_str().is_some_and(|name| {
+                    !name.trim().is_empty()
+                        && name == name.trim()
+                        && name.len() <= 64
+                        && !name.chars().any(char::is_control)
+                })
+            })
+    })
 }
 
 pub(crate) fn compile_models(value: Option<&Value>) -> (BTreeMap<String, String>, Vec<String>) {
@@ -567,4 +710,31 @@ pub(crate) fn expand_string(value: &str) -> String {
         cursor = end + 1;
     }
     output
+}
+
+#[cfg(test)]
+mod empty_configuration_tests {
+    #[test]
+    fn token_named_admin_is_not_an_explicit_administrator() {
+        let key = super::compile_api_key(&serde_json::json!({"api":"admin","model":["all"]}), true)
+            .unwrap();
+        assert_eq!(key["role"], "user");
+    }
+    #[test]
+    fn malformed_collection_types_are_not_silently_emptied() {
+        for input in [
+            b"providers: nope".as_slice(),
+            b"api_keys: {}".as_slice(),
+            b"preferences: []".as_slice(),
+        ] {
+            assert!(super::compile_snapshot_bytes(input, true).is_err());
+        }
+    }
+    #[test]
+    fn empty_managed_configuration_is_fail_closed_but_compilable() {
+        let bytes = super::compile_snapshot_bytes(b"providers: []\napi_keys: []\n", true).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(value["providers"], serde_json::json!([]));
+        assert_eq!(value["api_keys"], serde_json::json!([]));
+    }
 }

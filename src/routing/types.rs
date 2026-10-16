@@ -37,5 +37,4 @@ pub(crate) struct RouteResolutionError {
 #[derive(Clone)]
 pub(crate) struct AuthContext {
     pub(crate) api_key: Arc<ApiKey>,
-    pub(crate) api_key_count: usize,
 }

@@ -5,14 +5,13 @@ use crate::transport::spool::StoredBody;
 use axum::http::{HeaderMap, HeaderValue};
 use bytes::Bytes;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::io;
 use std::time::Duration;
 use url::Url;
 
 pub(crate) fn multipart_output_boundary(request_id: &str) -> String {
-    let digest = Sha256::digest(request_id.as_bytes());
-    format!("uni-api-{}", hex_bytes(&digest[..12]))
+    let bytes = request_id.as_bytes();
+    format!("uni-api-{}", hex_bytes(&bytes[..bytes.len().min(12)]))
 }
 
 pub(crate) async fn multipart_rewrite_body(

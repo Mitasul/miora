@@ -58,6 +58,12 @@ type ByteStream = Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Sen
 #[derive(Clone, Debug, Deserialize)]
 pub(crate) struct Plan {
     #[serde(skip)]
+    pub(crate) capture_requested_model: Option<String>,
+    #[serde(skip)]
+    pub(crate) capture_sent_model: Option<String>,
+    #[serde(skip)]
+    pub(crate) capture_sensitive_headers: Vec<String>,
+    #[serde(skip)]
     pub(crate) dispatch: Option<crate::observability::timing::AttemptDispatch>,
     pub(crate) attempt_id: String,
     pub(crate) url: String,
@@ -551,6 +557,25 @@ async fn serve_native_nonstream(
     }
 }
 
+fn capture_native_attempt(
+    state: &AppState,
+    plan: &Plan,
+    stream: bool,
+) -> Option<crate::request_logs::capture::AttemptCapture> {
+    state.request_log.as_ref().map(|context| {
+        context.begin_attempt(
+            &plan.attempt_id,
+            plan.provider_name.as_deref(),
+            plan.capture_requested_model.as_deref(),
+            plan.capture_sent_model.as_deref(),
+            stream,
+            plan.provider_key.as_deref(),
+            &plan.capture_sensitive_headers,
+            None,
+        )
+    })
+}
+
 async fn send_native_nonstream_attempt(
     state: &AppState,
     plan: &Plan,
@@ -594,15 +619,15 @@ async fn send_native_nonstream_attempt(
         dispatch.record(&state.channel_metrics);
     }
     let observation_started = tokio::time::Instant::now();
+    let capture = capture_native_attempt(state, plan, false);
+    let send = crate::request_logs::capture::send(&client, request, capture);
     let response = if let Some(timeout) = timeout {
-        tokio::time::timeout(timeout, request.send())
+        tokio::time::timeout(timeout, send)
             .await
             .map_err(|_| "upstream non-streaming response timed out".to_owned())?
             .map_err(|error| format!("upstream non-streaming request failed: {error}"))?
     } else {
-        request
-            .send()
-            .await
+        send.await
             .map_err(|error| format!("upstream non-streaming request failed: {error}"))?
     };
     if let Some(dispatch) = &plan.dispatch {
@@ -809,7 +834,10 @@ async fn preflight_attempt_with_trigger(
         dispatch.billing.target(&plan.url, &billing_secret);
         dispatch.record(&state.channel_metrics);
     }
-    let mut request_future = Box::pin(request.send());
+    let capture = capture_native_attempt(state, &plan, true);
+    let mut request_future = Box::pin(crate::request_logs::capture::send(
+        &client, request, capture,
+    ));
     let mut hedge_triggered = false;
     let response = if let Some(trigger) = trigger {
         let first_can_trigger = first_deadline.is_some_and(|first| {
@@ -845,7 +873,7 @@ async fn preflight_attempt_with_trigger(
             .map_err(|error| format!("upstream response headers failed: {error}"))?
     };
     let headers_received_ms = started_at.elapsed().as_secs_f64() * 1000.0;
-    let mut stats = StreamStats::new(&plan.attempt_id);
+    let mut stats = StreamStats::new();
     stats.started_at = started_at;
     stats.headers_received_ms = Some(headers_received_ms);
     stats.observe_response_connection(&response);
@@ -1134,7 +1162,7 @@ fn take_active(active: &mut ActiveAttempt) -> Result<ActiveAttempt, String> {
         mode: active.mode,
         early_output: Vec::new(),
         buffered: Vec::new(),
-        stats: StreamStats::new(&active.plan.attempt_id),
+        stats: StreamStats::new(),
         terminal: None,
         precommit_deadline: active.precommit_deadline,
         total_deadline: active.total_deadline,
@@ -2669,6 +2697,9 @@ mod tests {
 
     fn test_active(engine: &str) -> ActiveAttempt {
         let plan = Plan {
+            capture_requested_model: None,
+            capture_sent_model: None,
+            capture_sensitive_headers: Vec::new(),
             dispatch: None,
             attempt_id: "attempt-1".into(),
             url: "http://provider.example/v1/responses".into(),
@@ -2727,7 +2758,7 @@ mod tests {
             assert_eq!(receiver.recv().await.unwrap().unwrap(), "occupied");
             receiver.recv().await.unwrap().unwrap()
         });
-        let mut stats = StreamStats::new("queue-wait");
+        let mut stats = StreamStats::new();
         stats.begin_raw_observation();
         send_raw_wire(&mut output, Bytes::from_static(b"unchanged"), &mut stats)
             .await
@@ -2742,7 +2773,7 @@ mod tests {
 
     #[test]
     fn raw_stream_observes_semantic_latency_without_rewriting_or_counting_keepalive() {
-        let mut stats = StreamStats::new("latency");
+        let mut stats = StreamStats::new();
         stats.started_at = tokio::time::Instant::now() - Duration::from_millis(400);
         let mut decoder = SseDecoder::new(4096);
         let keepalive =
@@ -2765,7 +2796,7 @@ mod tests {
         raw_terminal_prefix(decoder.feed(delta).unwrap(), &mut stats).unwrap();
         assert_eq!(stats.first_output_ms, Some(first));
         assert_eq!(stats.first_text_ms, Some(first_text));
-        let mut failed = StreamStats::new("failure");
+        let mut failed = StreamStats::new();
         let body=b"event: response.failed\ndata: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\"}}\n\n";
         raw_terminal_prefix(decoder.feed(body).unwrap(), &mut failed).unwrap();
         assert!(failed.first_output_ms.is_none());
@@ -2834,7 +2865,7 @@ mod tests {
                   event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
             )
             .unwrap();
-        let mut stats = StreamStats::new("raw-terminal-test");
+        let mut stats = StreamStats::new();
         let (_prefix, terminal) = raw_terminal_prefix(frames, &mut stats).unwrap();
         let terminal = terminal.expect("completed terminal expected");
         assert!(matches!(terminal, Terminal::Completed));
@@ -2853,7 +2884,7 @@ mod tests {
                   : provider heartbeat after completed\n\n",
             )
             .unwrap();
-        let mut stats = StreamStats::new("raw-terminal-prefix-test");
+        let mut stats = StreamStats::new();
         let (prefix, terminal) = raw_terminal_prefix(frames, &mut stats).unwrap();
         let terminal = terminal.expect("completed must terminate raw forwarding");
         let wire = String::from_utf8(prefix.to_vec()).unwrap();
@@ -2871,7 +2902,7 @@ mod tests {
                   event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\",\"code\":\"server_error\",\"message\":\"temporarily unavailable\"}}\n\n",
             )
             .unwrap();
-        let mut stats = StreamStats::new("raw-semantic-failure-test");
+        let mut stats = StreamStats::new();
         let (prefix, terminal) = raw_terminal_prefix(frames, &mut stats).unwrap();
         let terminal = terminal.expect("semantic terminal expected");
         let wire = String::from_utf8(prefix.to_vec()).unwrap();
@@ -2889,7 +2920,7 @@ mod tests {
                   event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"upstream_error\"",
             )
             .unwrap();
-        let mut stats = StreamStats::new("raw-fragmented-semantic-failure-test");
+        let mut stats = StreamStats::new();
         let (first_wire, first_terminal) = raw_terminal_prefix(first, &mut stats).unwrap();
         assert!(first_terminal.is_none());
         assert!(String::from_utf8(first_wire.to_vec())
@@ -2914,7 +2945,7 @@ mod tests {
         assert!(decoder.feed(first).unwrap().is_empty());
         let second = b"pleted\",\"response\":{\"status\":\"completed\"}}\n\n";
         let frames = decoder.feed(second).unwrap();
-        let mut stats = StreamStats::new("raw-terminal-fragment-test");
+        let mut stats = StreamStats::new();
         let (new_bytes, terminal) = raw_terminal_prefix(frames, &mut stats).unwrap();
         let terminal = terminal.expect("completed terminal expected");
         assert!(matches!(terminal, Terminal::Completed));

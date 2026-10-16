@@ -161,7 +161,7 @@ def verify(binary, endpoint, hedging, engine="gpt"):
                 connection.close()
 
         with (root / "log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:

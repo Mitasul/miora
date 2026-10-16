@@ -16,6 +16,10 @@ pub(crate) fn apply_overrides(
             apply_override_section(root, model, provider, false);
         }
     }
+    enforce_protocol_constraints(root, provider);
+}
+
+pub(crate) fn enforce_protocol_constraints(root: &mut Map<String, Value>, provider: &Provider) {
     // Codex wire requirements also apply when no overrides are configured,
     // and cannot be undone by provider-wide or model-specific overrides.
     // Endpoint-specific sanitizers still run afterwards (e.g. compact drops store).

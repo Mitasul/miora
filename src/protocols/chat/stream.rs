@@ -192,9 +192,18 @@ fn heartbeat_body(response: Response<Body>, interval: Option<Duration>) -> Respo
 
 /// Headers, comments, role-only deltas and usage do not constitute model output.
 /// Retain bounded metadata for the winning attempt; discard it on retry.
+#[cfg(test)]
 pub async fn preflight(
     translation: Translation,
     deadline: Option<Instant>,
+) -> Result<Translation, PrecommitFailure> {
+    preflight_protocol(translation, deadline, None).await
+}
+
+pub(crate) async fn preflight_protocol(
+    translation: Translation,
+    deadline: Option<Instant>,
+    protocol: Option<crate::protocols::provider_stream::Protocol>,
 ) -> Result<Translation, PrecommitFailure> {
     let Translation { response, outcome } = translation;
     let (parts, body) = response.into_parts();
@@ -205,7 +214,11 @@ pub async fn preflight(
         while let Some((end, separator)) =
             crate::protocols::provider_stream::next_event_boundary(&buffer)
         {
-            let commit = real_output(&buffer[..end])?;
+            let commit = if let Some(protocol) = protocol {
+                native_output(&buffer[..end], protocol)?
+            } else {
+                real_output(&buffer[..end])?
+            };
             retained.extend(buffer.drain(..end + separator));
             if retained.len() > MAX_PRECOMMIT_BYTES {
                 return Err(failure("Chat metadata exceeded 1 MiB before real output"));
@@ -309,6 +322,100 @@ fn real_output(event: &[u8]) -> Result<bool, PrecommitFailure> {
                         })
             })
         }))
+}
+
+fn native_output(
+    event: &[u8],
+    protocol: crate::protocols::provider_stream::Protocol,
+) -> Result<bool, PrecommitFailure> {
+    let text = std::str::from_utf8(event).map_err(|_| failure("Invalid UTF-8 in SSE event"))?;
+    let data = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("data:"))
+        .map(str::trim_start)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if data.is_empty() {
+        return Ok(false);
+    }
+    if data == "[DONE]" {
+        return Err(failure("Upstream stream ended without semantic output"));
+    }
+    let value: Value =
+        serde_json::from_str(&data).map_err(|_| failure("Invalid upstream SSE JSON"))?;
+    if value.get("error").is_some_and(|error| !error.is_null()) || value["type"] == "error" {
+        let status_code = value["error"]["code"]
+            .as_u64()
+            .filter(|status| (400..=599).contains(status))
+            .unwrap_or(502) as u16;
+        return Err(PrecommitFailure {
+            status_code,
+            detail: value["error"].to_string(),
+            failure_reason: Some("upstream_response_failed"),
+        });
+    }
+    if crate::protocols::provider_stream::semantic_output_value(protocol, &value)
+        || crate::providers::reliability::blocked(&value)
+    {
+        return Ok(true);
+    }
+    if matches!(
+        value["type"].as_str(),
+        Some("message_stop" | "message_delta")
+    ) && !value["delta"]["stop_reason"].is_null()
+        || value["type"] == "message_stop"
+        || value.pointer("/candidates/0/finishReason").is_some()
+        || value
+            .pointer("/choices/0/finish_reason")
+            .is_some_and(|reason| !reason.is_null())
+    {
+        return Err(failure("Upstream stream completed without semantic output"));
+    }
+    Ok(false)
+}
+
+#[cfg(test)]
+mod gateway_features {
+    use super::*;
+    use crate::protocols::provider_stream::Protocol;
+    fn translation(text: &'static str) -> Translation {
+        let (_, outcome) = tokio::sync::oneshot::channel();
+        Translation {
+            response: Response::new(Body::from(text)),
+            outcome,
+        }
+    }
+    #[tokio::test]
+    async fn native_gemini_precommit_rejects_empty_success_and_soft_errors() {
+        let empty = translation("data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n");
+        assert!(preflight_protocol(empty, None, Some(Protocol::Gemini))
+            .await
+            .is_err());
+        let error = translation("data: {\"error\":{\"code\":429,\"message\":\"quota\"}}\n\n");
+        assert_eq!(
+            preflight_protocol(error, None, Some(Protocol::Gemini))
+                .await
+                .err()
+                .unwrap()
+                .status_code,
+            429
+        );
+        let blocked = translation("data: {\"promptFeedback\":{\"blockReason\":\"SAFETY\"}}\n\n");
+        assert!(preflight_protocol(blocked, None, Some(Protocol::Gemini))
+            .await
+            .is_ok());
+    }
+    #[tokio::test]
+    async fn native_messages_precommit_preserves_exact_bytes_after_real_output() {
+        let source = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"vendor\":1}}\n\nevent: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hello\"}}\n\n";
+        let output = preflight_protocol(translation(source), None, Some(Protocol::Claude))
+            .await
+            .unwrap_or_else(|_| panic!("native precommit failed"));
+        let bytes = axum::body::to_bytes(output.response.into_body(), 65536)
+            .await
+            .unwrap();
+        assert_eq!(bytes.as_ref(), source.as_bytes());
+    }
 }
 
 #[cfg(test)]

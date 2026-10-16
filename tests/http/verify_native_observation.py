@@ -10,6 +10,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from verify_dispatch_timing import free_port
+from http_fixture_process import wait_for_gateway, stop_gateway, report_gateway_failure
 
 facts = []
 
@@ -72,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='uni-native-facts-') as path:
         'api_keys': [{'api': 'fixture-admin', 'model': ['all']}],
     }
     (root / 'api.json').write_text(json.dumps(config))
-    env = {k: v for k, v in os.environ.items() if k in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'DYLD_LIBRARY_PATH')}
+    env = {k: v for k, v in os.environ.items() if k.upper() in ('PATH', 'HOME', 'TMPDIR', 'LANG', 'DYLD_LIBRARY_PATH', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'COMSPEC')}
     env.update(PORT=str(port), DISABLE_DATABASE='true', UNI_API_CONFIG_PATH=str(root / 'api.json'), RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root / 'snapshot.json'), UNI_API_SHARED_MEMORY_RESERVATION_PATH=str(root / 'ledger'), RUST_REQUEST_SPOOL_DIRECTORY=str(root / 'body-spool'), RUST_REQUEST_SPOOL_DISK_RESERVE_BPS='0', RUST_REQUEST_SPOOL_INODE_RESERVE_BPS='0', NO_PROXY='127.0.0.1,localhost', FACTS_S3_ENDPOINT=f'http://127.0.0.1:{server.server_port}', FACTS_S3_BUCKET='fixture', FACTS_S3_ACCESS_KEY_ID='fixture', FACTS_S3_SECRET_ACCESS_KEY='fixture', FACTS_S3_SPOOL_DIR=str(root / 'facts-spool'))
 
     def call(method, endpoint, payload=None, provider=None):
@@ -85,15 +86,9 @@ with tempfile.TemporaryDirectory(prefix='uni-native-facts-') as path:
         return status, body
 
     with (root / 'runtime.log').open('w') as log:
-        process = subprocess.Popen([str(pathlib.Path(sys.argv[1]).resolve())], cwd=root, env=env, stdout=log, stderr=log)
+        process = subprocess.Popen([str(pathlib.Path(sys.argv[1]).resolve())], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         try:
-            for _ in range(100):
-                try:
-                    if call('GET', '/healthz')[0] == 200:
-                        break
-                except OSError:
-                    pass
-                time.sleep(.05)
+            wait_for_gateway(process, port)
             for name, _ in providers:
                 endpoint = '/v1/messages' if name == 'claude-native' else '/v1/chat/completions'
                 status, body = call('POST', endpoint, {'model': name, 'messages': [{'role': 'user', 'content': 'fixture'}], 'max_tokens': 16, 'stream': True}, name)
@@ -118,10 +113,9 @@ with tempfile.TemporaryDirectory(prefix='uni-native-facts-') as path:
                         assert fact.get('failure_reason') is None, fact
                 print(json.dumps({'provider': name, 'outcome': attempt['outcome'], 'first_text_ms': attempt.get('first_text_ms'), 'failure_reason': attempt.get('failure_reason')}))
         except Exception:
-            print((root / 'runtime.log').read_text()[-5000:], file=sys.stderr)
+            report_gateway_failure(process, log, root / 'runtime.log')
             raise
         finally:
-            process.terminate()
-            process.wait(timeout=10)
+            stop_gateway(process)
 server.shutdown()
 server.server_close()

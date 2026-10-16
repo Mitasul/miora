@@ -1,10 +1,19 @@
 use std::collections::HashSet;
+#[cfg(unix)]
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 
 #[cfg(unix)]
 use std::os::fd::AsRawFd;
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
+#[cfg(windows)]
+use windows_sys::Win32::{
+    Foundation::HANDLE,
+    Storage::FileSystem::{LockFileEx, UnlockFileEx, LOCKFILE_EXCLUSIVE_LOCK},
+    System::IO::OVERLAPPED,
+};
 
 use axum::http::StatusCode;
 use serde_json::{json, Value};
@@ -131,6 +140,24 @@ impl SharedMemoryReservationLedger {
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) } != 0 {
             return Err(io::Error::last_os_error());
         }
+        #[cfg(windows)]
+        let mut overlapped: OVERLAPPED = unsafe { std::mem::zeroed() };
+        #[cfg(windows)]
+        // SAFETY: the File owns a valid, synchronous handle; OVERLAPPED remains
+        // alive until the matching unlock. Lock the complete ledger across processes.
+        if unsafe {
+            LockFileEx(
+                file.as_raw_handle() as HANDLE,
+                LOCKFILE_EXCLUSIVE_LOCK,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut overlapped,
+            )
+        } == 0
+        {
+            return Err(io::Error::last_os_error());
+        }
         let result = operation(&mut file);
         #[cfg(unix)]
         let unlock_result = if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_UN) } != 0 {
@@ -138,6 +165,24 @@ impl SharedMemoryReservationLedger {
         } else {
             Ok(())
         };
+        #[cfg(windows)]
+        // SAFETY: unlock the exact range locked above on the still-live File.
+        let unlock_result = if unsafe {
+            UnlockFileEx(
+                file.as_raw_handle() as HANDLE,
+                0,
+                u32::MAX,
+                u32::MAX,
+                &mut overlapped,
+            )
+        } == 0
+        {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(())
+        };
+        #[cfg(not(any(unix, windows)))]
+        let unlock_result: io::Result<()> = Ok(());
         match (result, unlock_result) {
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error),
@@ -716,6 +761,7 @@ fn statvfs(path: &Path) -> io::Result<FileSystemStats> {
     })
 }
 
+#[cfg(unix)]
 fn stat_value<T>(value: T, fallback: u64) -> u64
 where
     T: TryInto<u64>,
@@ -723,7 +769,36 @@ where
     value.try_into().unwrap_or(fallback)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn statvfs(path: &Path) -> io::Result<FileSystemStats> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    if wide.contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "path contains NUL",
+        ));
+    }
+    wide.push(0);
+    let mut available = 0;
+    let mut total = 0;
+    let mut free = 0;
+    // SAFETY: wide is NUL terminated and all output pointers address live u64s.
+    if unsafe { GetDiskFreeSpaceExW(wide.as_ptr(), &mut available, &mut total, &mut free) } == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(FileSystemStats {
+        total_bytes: total,
+        free_bytes: available,
+        // Windows does not expose a POSIX inode quota. Disk byte headroom is
+        // still enforced; do not invent an inode exhaustion condition.
+        total_inodes: u64::MAX,
+        free_inodes: u64::MAX,
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
 fn statvfs(_path: &Path) -> io::Result<FileSystemStats> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

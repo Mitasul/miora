@@ -2,7 +2,6 @@ use crate::runtime::clock::unix_seconds;
 use base64::engine::general_purpose::{STANDARD as BASE64, URL_SAFE_NO_PAD};
 use base64::Engine;
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
 use url::Url;
@@ -113,17 +112,25 @@ pub(crate) fn chat_to_gemini(input: &Value, original_model: &str) -> Result<Valu
     if contents.is_empty() {
         contents.push(json!({"role":"user","parts":[{"text":"No messages"}]}));
     }
+    let lower_model = original_model.to_ascii_lowercase();
+    let is_gemini_4 = lower_model.contains("gemini-4");
+    let is_gemini_38_or_4 = is_gemini_4 || lower_model.contains("gemini-3.8");
     let mut generation = Map::new();
-    if let Some(value) = root.get("temperature") {
-        generation.insert("temperature".into(), value.clone());
+    if !is_gemini_4 {
+        if let Some(value) = root.get("temperature") {
+            generation.insert("temperature".into(), value.clone());
+        }
+        if let Some(value) = root.get("top_p") {
+            generation.insert("topP".into(), value.clone());
+        }
     }
-    if let Some(value) = root.get("top_p") {
-        generation.insert("topP".into(), value.clone());
-    }
-    generation.insert(
-        "maxOutputTokens".into(),
-        root.get("max_tokens").cloned().unwrap_or(json!(8192)),
-    );
+    let max_output_tokens = root
+        .get("max_completion_tokens")
+        .or_else(|| root.get("max_output_tokens"))
+        .or_else(|| root.get("max_tokens"))
+        .cloned()
+        .unwrap_or_else(|| json!(if is_gemini_38_or_4 { 65536 } else { 8192 }));
+    generation.insert("maxOutputTokens".into(), max_output_tokens);
     let mut output = json!({
         "contents": contents,
         "generationConfig": generation,
@@ -356,8 +363,9 @@ pub(crate) fn apply_gemini_request_controls(
         );
     }
     let effort = root
-        .get("reasoning_effort")
+        .get("thinking_level")
         .and_then(Value::as_str)
+        .or_else(|| root.get("reasoning_effort").and_then(Value::as_str))
         .or_else(|| {
             root.get("reasoning")
                 .and_then(|value| value.get("effort"))
@@ -370,7 +378,15 @@ pub(crate) fn apply_gemini_request_controls(
             .or_insert_with(|| json!({}))
             .as_object_mut()
             .expect("Gemini generation config");
-        if model.to_ascii_lowercase().contains("gemini-3") {
+        let lower_model = model.to_ascii_lowercase();
+        if lower_model.contains("gemini-4") {
+            let level = match effort.as_str() {
+                "minimal" | "low" => "low",
+                "high" | "extra_high" | "xhigh" => "high",
+                _ => "medium",
+            };
+            generation.insert("thinkingConfig".into(), json!({"thinkingLevel":level}));
+        } else if lower_model.contains("gemini-3") {
             let level = match effort.as_str() {
                 "minimal" | "low" => "low",
                 "medium" => "medium",
@@ -378,7 +394,7 @@ pub(crate) fn apply_gemini_request_controls(
                 _ => "minimal",
             };
             generation.insert("thinkingConfig".into(), json!({"thinkingLevel":level}));
-        } else if model.to_ascii_lowercase().contains("gemini-2.5") {
+        } else if lower_model.contains("gemini-2.5") {
             let maximum = if model.to_ascii_lowercase().contains("pro") {
                 32768
             } else {
@@ -442,34 +458,24 @@ pub(crate) fn decode_gemini_thought_signature(call_id: &str) -> Option<String> {
         .flatten()
 }
 
-pub(crate) fn gemini_image_key(encoded: &str) -> Option<String> {
-    if encoded.is_empty() || encoded.len() > 16 * 1024 * 1024 {
+pub(crate) fn gemini_image_thought_signature(encoded: &str) -> Option<String> {
+    let key = encoded.trim_end_matches('=');
+    if key.is_empty() || key.len() > 16 * 1024 * 1024 {
         return None;
     }
-    let padded = format!("{encoded}{}", "=".repeat((4 - encoded.len() % 4) % 4));
-    let decoded = BASE64.decode(padded.as_bytes()).ok()?;
-    Some(format!("{:x}", Sha256::digest(decoded)))
-}
-
-pub(crate) fn gemini_image_thought_signature(encoded: &str) -> Option<String> {
-    let key = gemini_image_key(encoded)?;
-    let cache = GEMINI_THOUGHT_SIGNATURES.get_or_init(|| {
-        Mutex::new(ThoughtSignatureCache {
-            values: HashMap::new(),
-            order: VecDeque::new(),
-            bytes: 0,
-        })
-    });
-    cache.lock().ok()?.values.get(&key).cloned()
+    let cache = GEMINI_THOUGHT_SIGNATURES.get()?;
+    cache.lock().ok()?.values.get(key).cloned()
 }
 
 pub(crate) fn cache_gemini_image_thought_signature(encoded: &str, signature: &str) {
-    if signature.is_empty() || signature.len() > 64 * 1024 {
+    let key = encoded.trim_end_matches('=');
+    if key.is_empty()
+        || key.len() > 16 * 1024 * 1024
+        || signature.is_empty()
+        || signature.len() > 64 * 1024
+    {
         return;
     }
-    let Some(key) = gemini_image_key(encoded) else {
-        return;
-    };
     let cache = GEMINI_THOUGHT_SIGNATURES.get_or_init(|| {
         Mutex::new(ThoughtSignatureCache {
             values: HashMap::new(),
@@ -480,11 +486,16 @@ pub(crate) fn cache_gemini_image_thought_signature(encoded: &str, signature: &st
     let Ok(mut cache) = cache.lock() else {
         return;
     };
-    if let Some(previous) = cache.values.remove(&key) {
-        cache.bytes = cache.bytes.saturating_sub(previous.len());
-        cache.order.retain(|item| item != &key);
+    if let Some(previous) = cache.values.remove(key) {
+        cache.bytes = cache
+            .bytes
+            .saturating_sub(key.len().saturating_add(previous.len()));
+        cache.order.retain(|item| item != key);
     }
-    cache.bytes = cache.bytes.saturating_add(signature.len());
+    let key = key.to_owned();
+    cache.bytes = cache
+        .bytes
+        .saturating_add(key.len().saturating_add(signature.len()));
     cache.order.push_back(key.clone());
     cache.values.insert(key, signature.to_owned());
     while cache.values.len() > 100 || cache.bytes > 4 * 1024 * 1024 {
@@ -492,7 +503,9 @@ pub(crate) fn cache_gemini_image_thought_signature(encoded: &str, signature: &st
             break;
         };
         if let Some(value) = cache.values.remove(&oldest) {
-            cache.bytes = cache.bytes.saturating_sub(value.len());
+            cache.bytes = cache
+                .bytes
+                .saturating_sub(oldest.len().saturating_add(value.len()));
         }
     }
 }
@@ -511,6 +524,10 @@ pub(crate) fn gemini_call_id(signature: Option<&str>, fallback_index: usize) -> 
 }
 
 pub(crate) fn gemini_to_chat(value: &Value, model: &str) -> Value {
+    let value = value
+        .get("response")
+        .filter(|inner| inner.is_object())
+        .unwrap_or(value);
     let candidate = value
         .get("candidates")
         .and_then(Value::as_array)
@@ -615,5 +632,8 @@ pub(crate) fn gemini_url(
         }
     ));
     url.query_pairs_mut().clear().append_pair("key", key);
+    if stream {
+        url.query_pairs_mut().append_pair("alt", "sse");
+    }
     Ok(url.to_string())
 }

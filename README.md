@@ -2,9 +2,140 @@
 
 # Miora
 
-An independently maintained AI API gateway based on [uni-api](https://github.com/yym68686/uni-api).
+[English](./README.md) | [简体中文](./README_CN.md)
 
-Miora retains upstream history, attribution, and the Apache-2.0 license. Upstream documentation follows below; some names and deployment examples still refer to uni-api.
+**Miora** is a high-performance, single-binary Rust AI API Gateway and Management Console evolved from [uni-api](https://github.com/yym68686/uni-api).  
+Designed for seamless migration from **Zoaholic / uni-api** and modern multi-provider routing, Miora ships with an embedded web console (`/login` & `/admin`), native **OAuth 2.0 PKCE login & auto-refresh for OpenAI Codex, Anthropic Claude, and Antigravity**, **dynamic HTTP/SSE channel plugins (`miora.plugin.v1`)**, and **customizable multi-parameter concurrent batch model testing**.
+
+Miora retains upstream history, attribution, and the Apache-2.0 license.
+
+---
+
+## Key Features / 核心特性
+
+- **Single-Binary Embedded Admin Console (`/login` & `/admin`)**
+  - All admin UI assets (`HTML/CSS/ES Modules` + local SVG brand marks, zero external CDN or emoji) are compiled directly into `uni-api-front`.
+  - Administrator authentication is strictly isolated from inference API keys (PBKDF2-SHA256 password verification, CSRF protection, 3-day default session TTL `MIORA_ADMIN_SESSION_TTL_SECONDS=259200`).
+- **Native OAuth 2.0 PKCE & Automatic Token Refresh (Codex / Claude / Antigravity)**
+  - Built-in PKCE (`S256`) authorization flows for **OpenAI Codex**, **Anthropic Claude**, and **Antigravity (Google Cloud Code Assist `v1internal`)**.
+  - **Dual Callback Modes**: Automatic local loopback listener (`127.0.0.1:1455` for Codex, `127.0.0.1:8085` for Antigravity) with live frontend polling, plus manual callback URL / `code#state` paste for remote Docker deployments.
+  - **Zero-Downtime Auto-Refresh**: Automatically refreshes expiring OAuth access tokens (within a 60s pre-expiry window) and atomically persists updated credentials back to `api.yaml`.
+- **Customizable & Concurrent Batch Model Testing**
+  - **Test Anywhere**: Inline draft model testing before saving a channel, per-key health checks in the channel account pool, single-channel or cross-channel batch testing dialog, and the standalone `#testing` workbench.
+  - **Custom Parameters**: Freely configure `prompt` (defaults to `hi`), `temperature` (presets or custom `0.0–2.0`), `top_p`, `max_tokens`, `reasoning_effort` (`low`/`medium`/`high`), protocol endpoint (`/v1/chat/completions` or `/v1/responses`), and concurrency (`1 / 3 / 5 / 10`).
+  - **Batch Operations**: Filter results by status (All / Passed / Failed / Untested), retry failed models in one click, or **remove failed models in one click** directly inside the channel editor.
+- **Built-in Adapters + Dynamic Channel Plugin Architecture (`miora.plugin.v1`)**
+  - **7 Built-in Adapters**: `OpenAI Compatible (openai)`, `Anthropic Claude (claude)`, `Google Gemini (gemini)` (with **Gemini 4 / 3.8** parameter adaptation & `thinkingLevel` mapping), `Codex (codex)`, `Antigravity (antigravity)`, `OpenRouter (openrouter)`, and `Azure OpenAI (azure)`.
+  - **External HTTP/SSE Channel Plugins**: Upload a `.miora.json` service descriptor in the console to register, enable/disable, upgrade, or roll back external provider services without modifying the gateway binary.
+- **Tri-State Parameter Policy & Offline Request Preview**
+  - Per-channel `preferences.parameter_policy` supporting Inherit, Explicit Override, and Explicit Remove with per-model scoping and zero-cost offline payload preview.
+- **Four-Stage Request Logs & Granular Cost Analytics**
+  - Independent four-stage request capture, automatic credential redaction, two-phase log retention/cleanup, and per-channel / per-model token pricing breakdown.
+
+---
+
+## Quick Start with Docker / Docker 快速部署
+
+### Option 1: Docker Compose (Recommended / 推荐)
+
+```bash
+git clone https://github.com/Mitasul/miora.git
+cd miora
+
+# 1. Create a persistent data directory for api.yaml, SQLite database, and plugins
+mkdir -p miora_data
+
+# 2. (Optional) Migrate your existing api.yaml from Zoaholic or uni-api:
+# cp /path/to/your/api.yaml ./miora_data/api.yaml
+
+# 3. Edit MIORA_ADMIN_PASSWORD in docker-compose.yml (at least 12 characters) and start:
+docker compose up -d --build
+```
+
+Open `http://127.0.0.1:8000/login` in your browser and sign in with username `admin` and your configured password.
+
+### Option 2: `docker run`
+
+```bash
+docker build -t miora:latest .
+
+docker run -d \
+  --name miora \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e MIORA_ADMIN_USERNAME=admin \
+  -e MIORA_ADMIN_PASSWORD=your-strong-password-12chars \
+  -e MIORA_ADMIN_SECURE_COOKIE=false \
+  -e MIORA_ADMIN_SESSION_TTL_SECONDS=259200 \
+  -e MIORA_BOOTSTRAP_EMPTY_CONFIG=true \
+  -e UNI_API_CONFIG_PATH=/home/data/api.yaml \
+  -e DB_PATH=/home/data/stats.db \
+  -e MIORA_PLUGIN_STORE_DIR=/home/data/plugins \
+  -v $(pwd)/miora_data:/home/data \
+  miora:latest
+```
+
+> **Deployment Notes / 部署注意事项**:
+> - Mount a directory (`/home/data`) rather than a single file (`./api.yaml:/home/api.yaml`) so atomic config writes and OAuth token refreshes succeed without `Device or resource busy` errors.
+> - Set `MIORA_ADMIN_SECURE_COOKIE=false` when accessing the console over plain HTTP (`http://ip:8000`). Use `true` behind HTTPS and set `MIORA_ADMIN_ORIGIN=https://your-domain.com`.
+
+---
+
+## Migrating from Zoaholic /从 Zoaholic 迁移
+
+1. **Drop-in `api.yaml` Compatibility**: Copy your existing `api.yaml` into `./miora_data/api.yaml`. Existing `providers`, `api_keys`, model aliases (`upstream: public_alias`), `groups`, weights, and cooldown settings work out of the box.
+2. **Dynamic Model Discovery (No Hardcoded Model Lists)**: Use **Fetch Models (获取模型)** in the channel editor to query upstream `/v1/models` live, or type any custom model ID directly.
+3. **OAuth Account Pool (Codex / Claude / Antigravity)**: Open **Channels -> Account Pool (账号池) -> OAuth Login (OAuth 登录)** to add multiple OAuth accounts per channel. For remote Docker servers, simply copy the redirected browser URL (or `code#state`) and paste it into Step 3 of the modal.
+4. **Visual Group Picker**: Assign channel and API key routing groups with interactive `.group-chip` tags (`default`, `vip`, `coding`, `fast`, or custom groups).
+
+---
+
+## Built-in Adapters & Plugin Protocol / 内置适配器与插件文档
+
+| Adapter ID (`engine`) | Display Name | Upstream Protocol & Highlights |
+| :--- | :--- | :--- |
+| `openai` | OpenAI Compatible | `/v1/chat/completions`, `/v1/responses`, `/v1/embeddings`, images & audio (DeepSeek, xAI, SiliconFlow, etc.) |
+| `claude` | Anthropic Claude | Native `/v1/messages`, supports API keys and Claude OAuth (`sk-ant-oat...` with automatic `anthropic-beta` headers) |
+| `gemini` | Google Gemini | Native `generateContent` / `streamGenerateContent`, **Gemini 4** sampling filter & `thinkingLevel` support |
+| `codex` | Codex | OpenAI Codex Responses API, native OAuth PKCE & automatic token refresh |
+| `antigravity` | Antigravity (反重力) | Google Cloud Code Assist `v1internal:generateContent`, Google OAuth PKCE, automatic `loadCodeAssist` project discovery |
+| `openrouter` | OpenRouter | OpenRouter unified routing & model catalog discovery |
+| `azure` | Azure OpenAI | Azure deployment endpoints, API version & `api-key` authentication |
+
+To build or install external HTTP/SSE channel plugins (`.miora.json`), see **[Channel Plugins Protocol v1 (docs/channel-plugins.md)](docs/channel-plugins.md)** and `examples/plugins/`.
+
+---
+
+## Environment Variables / 环境变量
+
+| Variable | Default | Description |
+| :--- | :--- | :--- |
+| `MIORA_ADMIN_USERNAME` | `admin` | Admin console login username (`1–128` bytes) |
+| `MIORA_ADMIN_PASSWORD` | *(Required)* | Plaintext admin password (`12–1024` UTF-8 bytes, hashed via PBKDF2-SHA256 at startup) |
+| `MIORA_ADMIN_PASSWORD_HASH` | *(Alternative)* | Pre-computed `pbkdf2-sha256$...` hash (`python scripts/hash-admin-password.py`) |
+| `MIORA_ADMIN_SESSION_TTL_SECONDS` | `259200` (3 days) | Admin login session TTL in seconds (`300` to `2592000`, i.e., 5 min to 30 days) |
+| `MIORA_ADMIN_SECURE_COOKIE` | `true` | Set to `false` when accessing `/login` over plain HTTP |
+| `MIORA_ADMIN_ORIGIN` | Auto from Host | Explicit allowed HTTP(S) origin for admin requests |
+| `MIORA_BOOTSTRAP_EMPTY_CONFIG` | `false` | Create an initial empty `api.yaml` if missing |
+| `UNI_API_CONFIG_PATH` | `./api.yaml` | Path to the gateway configuration file |
+| `DB_PATH` | `./stats.db` | Path to the SQLite database for usage stats and request logs |
+| `MIORA_PLUGIN_STORE_DIR` | `./plugins` | Directory for installed external channel plugins and interceptors |
+
+---
+
+## Documentation Index / 文档索引
+
+- [中文完整说明 (README_CN.md)](./README_CN.md)
+- [Setup & Migration Guide (启动与迁移)](docs/miora-migration.md)
+- [Admin Authentication & Security (管理员与安全)](docs/admin.md)
+- [Channel Plugin Protocol v1 (渠道插件开发协议)](docs/channel-plugins.md)
+- [Admin Console UI & Static Contract (后台界面说明)](docs/admin-ui.md)
+- [Channel Parameter Policy & Preview (渠道参数策略)](docs/parameter-policy.md)
+- [Request Log Retention & Cleanup (请求日志留存与清理)](docs/request-logs.md)
+- [Gateway Features Overview (网关功能全景)](docs/gateway-features.md)
+- [Performance Verification (性能验证)](docs/performance.md)
+
+Historical upstream documentation follows below. Its frontend-free deployment, external console and implicit administrator rules are not the current Miora behavior.
 
 ---
 
@@ -511,7 +642,9 @@ settings. Weighted mode deliberately ignores those request-count controls.
 The CLI `--limit-concurrency` override is likewise rejected outside legacy
 mode, so an old deployment flag cannot silently restore a request slot.
 
-When DB_TYPE is postgres, the following environment variables need to be set:
+The Rust gateway accepts `DATABASE_URL`, taking precedence over `DB_TYPE` and individual `DB_*` values, for example `postgresql://user:password@db.example:5432/miora?sslmode=require`. PostgreSQL URLs require TLS by default with certificate-chain and hostname verification; `DB_SSL_ROOT_CERT` adds a private PEM CA. Persistent SQLite file URLs such as `sqlite://./data/stats.db` are also supported. See [gateway features and configuration](docs/gateway-features.md).
+
+Without `DATABASE_URL`, DB_TYPE postgres retains the following environment variables. Legacy connections default to TLS disabled; set `DB_SSLMODE=require` to enable it:
 
 - DB_USER: Database user name, default is postgres, optional
 - DB_PASSWORD: Database password, default is mysecretpassword, optional
@@ -1321,10 +1454,9 @@ unchanged. Consumers must support the additive `billing` fact kind before this
 release is deployed, and exclude it from request/attempt/token rollups. The
 console matches site/key ownership and exact receipt IDs to split shared upstream
 keys by caller. Old facts without identifiers cannot be retroactively attributed.
-`billing` facts also retain `upstream_error_sha256` for buffered HTTP error
-responses. This is evidence for downstream reconciliation, not a billing decision;
-raw error bodies are never exported. Successful, cancelled and unread responses
-have no error digest.
+`billing` facts retain bounded, redacted error fields from buffered HTTP error
+responses. These aid downstream reconciliation without hashing or exporting raw
+error bodies; they do not affect billing decisions.
 
 `/v1/observability/runtime` exposes `billing_error_evidence`, `billing_receipt_correlation`, the native build
 version and source commit for deployment verification.

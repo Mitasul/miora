@@ -16,8 +16,6 @@ use crate::upstream::hedging::parse_hedging;
 use crate::upstream::hedging::HedgingConfig;
 use axum::http::{HeaderMap, StatusCode};
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -126,6 +124,7 @@ impl GatewayRuntime {
                 message: format!("No available providers at the moment: {request_model}"),
             });
         }
+        let providers = crate::routing::access::caller_credentials(headers, providers)?;
         let providers = self
             .schedule_providers(&api_key, request_model, providers)
             .await;
@@ -135,7 +134,11 @@ impl GatewayRuntime {
                 message: "All matching channels are temporarily disabled".into(),
             });
         }
-        let hedging = if headers.contains_key(TARGET_PROVIDER_HEADER) {
+        let hedging = if headers.contains_key(TARGET_PROVIDER_HEADER)
+            || providers
+                .iter()
+                .any(|provider| provider.preferences.contains_key("__virtual_alias"))
+        {
             HedgingConfig::default()
         } else {
             parse_hedging(&snapshot.preferences)
@@ -170,7 +173,17 @@ impl GatewayRuntime {
         request_model: &str,
         providers: Vec<Arc<Provider>>,
     ) -> Vec<Arc<Provider>> {
-        if providers.len() <= 1 {
+        if providers.len() <= 1
+            || providers.first().is_some_and(|provider| {
+                matches!(
+                    provider.credential,
+                    crate::config::snapshot::ProviderCredential::CallerSupplied(_)
+                )
+            })
+            || providers
+                .first()
+                .is_some_and(|provider| provider.preferences.contains_key("__virtual_alias"))
+        {
             return providers;
         }
         let algorithm = api_key
@@ -344,62 +357,11 @@ pub(crate) fn matching_providers(
     // rules it explicitly owns; its token is never turned into a synthetic
     // upstream channel, so parent and child policy boundaries stay visible to
     // scheduling and accounting.
-    fn collect(
-        snapshot: &Snapshot,
-        key: &ApiKey,
-        model: &str,
-        out: &mut Vec<Arc<Provider>>,
-        visiting: &mut std::collections::BTreeSet<String>,
-    ) {
-        if !visiting.insert(key.token.to_string()) {
-            return;
-        }
-        let rules = key
-            .preferences
-            .get("__route_graph")
-            .and_then(Value::as_array)
-            .map(|v| v.iter().filter_map(Value::as_str).collect::<Vec<_>>())
-            .unwrap_or_else(|| key.model_rules.iter().map(String::as_str).collect());
-        for rule in rules {
-            let Some((alias, requested)) = rule.split_once('/') else {
-                if rule == "all"
-                    || rule == model
-                    || (rule.starts_with('<')
-                        && rule.ends_with('>')
-                        && &rule[1..rule.len() - 1] == model)
-                {
-                    out.extend(
-                        snapshot
-                            .providers
-                            .iter()
-                            .filter(|p| p.models.contains_key(model))
-                            .cloned(),
-                    );
-                }
-                continue;
-            };
-            if let Some(child) = snapshot.api_keys.get(alias) {
-                if requested == "*" || requested == model {
-                    collect(snapshot, child, model, out, visiting);
-                }
-                continue;
-            }
-            if let Some(provider) = snapshot.providers_by_name.get(alias) {
-                if (requested == "*" || requested == model) && provider.models.contains_key(model) {
-                    out.push(provider.clone());
-                }
-            }
-        }
-        visiting.remove(key.token.as_ref());
-    }
-    let mut matches = Vec::new();
-    collect(
-        snapshot,
-        api_key,
-        request_model,
-        &mut matches,
-        &mut std::collections::BTreeSet::new(),
-    );
+    let mut matches: Vec<_> =
+        crate::routing::catalog::model_entries(snapshot, api_key, request_model)
+            .into_iter()
+            .map(|(provider, _)| provider)
+            .collect();
     // Only an authenticated diagnostic key can opt in. Extend a request-local
     // provider clone; preserve configured aliases and every other provider rule.
     // The live snapshot, caller model lists and future requests are untouched.
@@ -415,6 +377,7 @@ pub(crate) fn matching_providers(
             .get("__diagnostic_provider")
             .and_then(Value::as_str)
             .and_then(|name| snapshot.providers_by_name.get(name))
+            .filter(|provider| crate::routing::catalog::group_allowed(provider, api_key))
         {
             if !request_model.is_empty()
                 && request_model.len() <= 256
@@ -428,10 +391,6 @@ pub(crate) fn matching_providers(
             }
         }
     }
-    // First occurrence defines priority, including nested key and wildcard rules.
-    // Sorting to deduplicate silently changes fixed_priority into name order.
-    let mut seen = BTreeSet::new();
-    matches.retain(|provider| seen.insert(provider.name.clone()));
     matches.retain(|provider| {
         crate::control::channels::temporary_allowed(provider, api_key)
             && provider_accepts_endpoint(provider, endpoint)
@@ -570,18 +529,11 @@ pub(crate) fn shuffle_providers(providers: &mut [Arc<Provider>], mut seed: u64) 
     }
 }
 
-pub(crate) fn scheduling_seed(scope: &str, request_model: &str) -> u64 {
-    let mut hasher = Sha256::new();
-    hasher.update(scope.as_bytes());
-    hasher.update([0]);
-    hasher.update(request_model.as_bytes());
-    hasher.update(
-        SCHEDULING_NONCE
-            .fetch_add(1, Ordering::Relaxed)
-            .to_le_bytes(),
-    );
-    let digest = hasher.finalize();
-    u64::from_le_bytes(digest[..8].try_into().expect("SHA-256 prefix"))
+pub(crate) fn scheduling_seed(_scope: &str, _request_model: &str) -> u64 {
+    xorshift(
+        SCHEDULING_NONCE.fetch_add(1, Ordering::Relaxed)
+            ^ crate::runtime::clock::unix_millis() as u64,
+    )
 }
 
 pub(crate) fn xorshift(mut value: u64) -> u64 {

@@ -11,7 +11,6 @@ use crate::protocols::provider_stream::OutputProtocol as StreamOutputProtocol;
 use crate::protocols::provider_stream::Protocol as StreamProtocol;
 use crate::providers::anthropic::claude_to_chat;
 use crate::providers::gemini::gemini_to_chat;
-use crate::providers::request::build_attempt;
 use crate::providers::types::AttemptBody;
 use crate::providers::types::DownstreamProtocol;
 use crate::providers::types::PreparedAttempt;
@@ -129,6 +128,9 @@ pub(crate) async fn next_generic_hedge_plan(
         let attempt_index = *cursor;
         *cursor += 1;
         let provider = execution.providers[attempt_index % execution.providers.len()].clone();
+        if !crate::routing::access::virtual_target_accepts(&provider, last_status.as_u16()) {
+            continue;
+        }
         let Some(original_model) = provider.models.get(&execution.request_model).cloned() else {
             continue;
         };
@@ -186,7 +188,12 @@ pub(crate) async fn next_generic_hedge_plan(
         };
         let mut provider_key = provider_key_raw.clone();
         let mut codex_account_id = None;
-        if provider.engine.eq_ignore_ascii_case("codex") && provider_key_raw.contains(',') {
+        if (matches!(
+            provider.engine.to_ascii_lowercase().as_str(),
+            "codex" | "claude" | "antigravity"
+        ) && provider_key_raw.contains(','))
+            || provider_key_raw.trim_start().starts_with('{')
+        {
             match execution
                 .state
                 .codex_oauth
@@ -214,7 +221,7 @@ pub(crate) async fn next_generic_hedge_plan(
                 }
             }
         }
-        let mut prepared = match build_attempt(
+        let mut prepared = match execution.state.plugins.prepare(
             &provider,
             &provider_key,
             &execution.request_model,
@@ -350,6 +357,11 @@ pub(crate) fn spawn_generic_hedge_attempt(
     let state = execution.state.clone();
     let incoming_headers = execution.headers.clone();
     let endpoint = execution.path.clone();
+    let capture_attempt_id = format!(
+        "{}-r{}",
+        execution.request_id,
+        plan.context.attempt_index + 1
+    );
     let context = plan.context;
     let key = context.attempt_index;
     scheduler.spawn(key, move |trigger| async move {
@@ -359,6 +371,7 @@ pub(crate) fn spawn_generic_hedge_attempt(
             plan.prepared,
             &incoming_headers,
             &endpoint,
+            &capture_attempt_id,
             None,
             Some(&trigger),
         )
@@ -382,6 +395,8 @@ pub(crate) async fn run_hedged_attempt_loop(
     let mut last_status = StatusCode::BAD_GATEWAY;
     let mut last_detail = String::from("No upstream attempt succeeded");
     let mut last_upstream_response = None;
+    let mut final_provider = String::new();
+    let mut final_upstream_model = String::new();
 
     if let Some(plan) =
         next_generic_hedge_plan(&execution, &mut cursor, &mut last_status, &mut last_detail).await
@@ -457,7 +472,10 @@ pub(crate) async fn run_hedged_attempt_loop(
                     model: execution.request_model.clone(),
                     upstream_model: context.original_model.clone(),
                     api_key: execution.api_key.clone(),
-                    provider_api_key: context.provider_key.clone(),
+                    provider_api_key: context
+                        .provider
+                        .credential
+                        .statistics_key(&context.provider_key),
                     success: true,
                     endpoint: execution.path.clone(),
                     stream: context.downstream_stream,
@@ -469,6 +487,10 @@ pub(crate) async fn run_hedged_attempt_loop(
                     .await;
                 execution.state.persistence.record_request(RequestStat {
                     fact_usage,
+                    usage_pricing: crate::storage::usage::pricing_for_model(
+                        context.provider.preferences.get("usage_pricing"),
+                        &execution.request_model,
+                    ),
                     stream: context.downstream_stream,
                     status: status.as_u16(),
                     request_id: execution.request_id.clone(),
@@ -521,6 +543,8 @@ pub(crate) async fn run_hedged_attempt_loop(
                     context,
                     mut failure,
                 } = failure;
+                final_provider = context.provider.name.to_string();
+                final_upstream_model = context.original_model.clone();
                 let policy = classify_provider_failure(
                     failure.status.as_u16(),
                     &failure.detail,
@@ -562,7 +586,10 @@ pub(crate) async fn run_hedged_attempt_loop(
                     model: execution.request_model.clone(),
                     upstream_model: context.original_model.clone(),
                     api_key: execution.api_key.clone(),
-                    provider_api_key: context.provider_key.clone(),
+                    provider_api_key: context
+                        .provider
+                        .credential
+                        .statistics_key(&context.provider_key),
                     success: false,
                     endpoint: execution.path.clone(),
                     stream: context.downstream_stream,
@@ -628,6 +655,8 @@ pub(crate) async fn run_hedged_attempt_loop(
     execution.state.persistence.record_request(RequestStat {
         is_flagged: true,
         failure_reason: Some("no_successful_channel".into()),
+        provider: final_provider,
+        upstream_model: final_upstream_model,
         status: last_status.as_u16(),
         request_id: execution.request_id,
         trace_id: execution.trace_id,
@@ -678,9 +707,14 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
     let mut last_detail = String::from("No upstream attempt succeeded");
     let mut last_upstream_response = None;
     let mut upstream_failed = false;
+    let mut final_provider = String::new();
+    let mut final_upstream_model = String::new();
 
     for attempt_index in 0..max_attempts {
         let provider = providers[attempt_index % providers.len()].clone();
+        if !crate::routing::access::virtual_target_accepts(&provider, last_status.as_u16()) {
+            continue;
+        }
         let Some(original_model) = provider.models.get(&request_model).cloned() else {
             continue;
         };
@@ -712,7 +746,12 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
         };
         let mut provider_key = provider_key_raw.clone();
         let mut codex_account_id = None;
-        if provider.engine.eq_ignore_ascii_case("codex") && provider_key_raw.contains(',') {
+        if (matches!(
+            provider.engine.to_ascii_lowercase().as_str(),
+            "codex" | "claude" | "antigravity"
+        ) && provider_key_raw.contains(','))
+            || provider_key_raw.trim_start().starts_with('{')
+        {
             match state
                 .codex_oauth
                 .resolve(
@@ -732,7 +771,7 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                 }
             }
         }
-        let mut prepared = match build_attempt(
+        let mut prepared = match state.plugins.prepare(
             &provider,
             &provider_key,
             &request_model,
@@ -794,6 +833,7 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
             prepared,
             &headers,
             &path,
+            &format!("{request_id}-r{}", attempt_index + 1),
             keepalive_updates.as_ref(),
             None,
         )
@@ -810,6 +850,10 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                 } = success;
                 let request_stat = RequestStat {
                     fact_usage,
+                    usage_pricing: crate::storage::usage::pricing_for_model(
+                        provider.preferences.get("usage_pricing"),
+                        &request_model,
+                    ),
                     stream: downstream_stream,
                     upstream_model: original_model.clone(),
                     status: status.as_u16(),
@@ -899,7 +943,9 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                             model: outcome_model.clone(),
                             upstream_model: outcome_original_model.clone(),
                             api_key: outcome_api_key,
-                            provider_api_key: outcome_provider_key.clone(),
+                            provider_api_key: outcome_provider
+                                .credential
+                                .statistics_key(&outcome_provider_key),
                             success: outcome.success,
                             endpoint: outcome_path.clone(),
                             stream: downstream_stream,
@@ -995,7 +1041,7 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                     model: request_model.clone(),
                     upstream_model: original_model.clone(),
                     api_key: api_key.clone(),
-                    provider_api_key: provider_key_raw.clone(),
+                    provider_api_key: provider.credential.statistics_key(&provider_key_raw),
                     success: true,
                     endpoint: path.clone(),
                     stream: downstream_stream,
@@ -1024,6 +1070,8 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
             }
             Err(mut failure) => {
                 upstream_failed = true;
+                final_provider = provider.name.to_string();
+                final_upstream_model = original_model.clone();
                 let policy = classify_provider_failure(
                     failure.status.as_u16(),
                     &failure.detail,
@@ -1063,7 +1111,7 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                     model: request_model.clone(),
                     upstream_model: original_model.clone(),
                     api_key: api_key.clone(),
-                    provider_api_key: provider_key_raw.clone(),
+                    provider_api_key: provider.credential.statistics_key(&provider_key_raw),
                     success: false,
                     endpoint: path.clone(),
                     stream: downstream_stream,
@@ -1104,7 +1152,12 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                     "failed",
                     Some(failure.status.as_u16()),
                 );
-                if !policy.retryable {
+                if !policy.retryable
+                    && !crate::routing::access::virtual_fallback_on(
+                        &providers[attempt_index.saturating_add(1).min(providers.len())..],
+                        failure.status.as_u16(),
+                    )
+                {
                     break;
                 }
             }
@@ -1114,6 +1167,8 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
     state.persistence.record_request(RequestStat {
         is_flagged: true,
         failure_reason: Some("no_successful_channel".into()),
+        provider: final_provider,
+        upstream_model: final_upstream_model,
         status: last_status.as_u16(),
         stream: input
             .payload
@@ -1162,7 +1217,95 @@ pub(crate) struct AttemptFailure {
     pub(crate) response: Option<Response<Body>>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn send_attempt(
+    state: &AppState,
+    provider: &Provider,
+    prepared: PreparedAttempt,
+    incoming_headers: &HeaderMap,
+    endpoint: &str,
+    attempt_id: &str,
+    keepalive_updates: Option<&crate::protocols::chat::stream::KeepaliveUpdates>,
+    hedge_trigger: Option<&HedgeTrigger<usize>>,
+) -> Result<AttemptSuccess, AttemptFailure> {
+    let capture = state.request_log.as_ref().map(|context| {
+        context.begin_attempt(
+            attempt_id,
+            Some(provider.name.as_ref()),
+            Some(&prepared.request_model),
+            prepared.wire_model.as_deref().or_else(|| {
+                matches!(
+                    prepared.adapter,
+                    ResponseAdapter::GeminiToChat | ResponseAdapter::AwsToChat
+                )
+                .then_some(prepared.original_model.as_str())
+            }),
+            prepared.downstream_stream,
+            Some(&prepared.provider_key),
+            &prepared.policy_report.sensitive_headers,
+            crate::plugins::channel_plugin_id(provider),
+        )
+    });
+    if let Some(capture) = &capture {
+        capture.tag_endpoint(endpoint);
+    }
+    let lease = prepared.plugin_lease.clone();
+    let plugin_info = lease.as_ref().and_then(|lease| {
+        crate::plugins::channel_plugin_id(provider).and_then(|id| {
+            lease.snapshot.versions.get(id).map(|version| {
+                (
+                    id.to_owned(),
+                    version.revision,
+                    version.manifest.version.clone(),
+                )
+            })
+        })
+    });
+    if let Some((id, revision, version)) = &plugin_info {
+        crate::observability::backend_logs::event(
+            json!({"event_type":"channel_plugin_dispatch","plugin_id":id,"plugin_revision":revision,"plugin_version":version,"channel":provider.name.as_ref(),"request_id":incoming_headers.get("x-request-id").and_then(|h|h.to_str().ok())}),
+        );
+    }
+    let mut result = send_attempt_inner(
+        state,
+        provider,
+        prepared,
+        incoming_headers,
+        endpoint,
+        keepalive_updates,
+        hedge_trigger,
+        capture.clone(),
+    )
+    .await;
+    if let (Some(capture), Err(_)) = (&capture, &result) {
+        capture.error("upstream");
+    }
+    if let Some(lease) = lease {
+        let response = match &mut result {
+            Ok(success) => Some(&mut success.response),
+            Err(failure) => failure.response.as_mut(),
+        };
+        if let Some(response) = response {
+            if let Some((id, revision, version)) = plugin_info {
+                for (name, value) in [
+                    ("x-miora-plugin-id", id),
+                    ("x-miora-plugin-revision", revision.to_string()),
+                    ("x-miora-plugin-version", version),
+                ] {
+                    if let Ok(value) = HeaderValue::from_str(&value) {
+                        response.headers_mut().insert(name, value);
+                    }
+                }
+            }
+            let body = std::mem::replace(response.body_mut(), Body::empty());
+            *response.body_mut() = lease.retain(body);
+        }
+    }
+    result
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_attempt_inner(
     state: &AppState,
     provider: &Provider,
     mut prepared: PreparedAttempt,
@@ -1170,6 +1313,7 @@ pub(crate) async fn send_attempt(
     endpoint: &str,
     keepalive_updates: Option<&crate::protocols::chat::stream::KeepaliveUpdates>,
     hedge_trigger: Option<&HedgeTrigger<usize>>,
+    capture: Option<crate::request_logs::capture::AttemptCapture>,
 ) -> Result<AttemptSuccess, AttemptFailure> {
     let proxy = provider.preferences.get("proxy").and_then(Value::as_str);
     let http1_only = provider.engine.eq_ignore_ascii_case("codex");
@@ -1194,23 +1338,33 @@ pub(crate) async fn send_attempt(
         updates.send_replace(interval);
     }
     let connect_timeout = positive_duration(timeouts.connect);
-    let client = state
-        .upstream_client(proxy, http1_only, connect_timeout)
-        .await
-        .map_err(|error| AttemptFailure {
-            failure_reason: "other".into(),
-            status: StatusCode::BAD_GATEWAY,
-            detail: error,
-            upstream_url: prepared.url.clone(),
-            response: None,
-        })?;
+    let plugin_service = prepared
+        .plugin_lease
+        .as_ref()
+        .is_some_and(|lease| lease.service);
+    let client = if plugin_service {
+        state.plugins.execution_client(connect_timeout)
+    } else {
+        state
+            .upstream_client(proxy, http1_only, connect_timeout)
+            .await
+    }
+    .map_err(|error| AttemptFailure {
+        failure_reason: "other".into(),
+        status: StatusCode::BAD_GATEWAY,
+        detail: error,
+        upstream_url: prepared.url.clone(),
+        response: None,
+    })?;
     // The resolved policy is also returned by the control-plane preview. Never
     // infer a second, hidden total timeout from model_timeout or the endpoint.
     let request_timeout = positive_duration(timeouts.total);
-    if matches!(
-        provider.engine.to_ascii_lowercase().as_str(),
-        "vertex" | "vertex-gemini" | "vertex-claude"
-    ) && provider.client_email.is_some()
+    if !plugin_service
+        && matches!(
+            provider.engine.to_ascii_lowercase().as_str(),
+            "vertex" | "vertex-gemini" | "vertex-claude"
+        )
+        && provider.client_email.is_some()
         && provider.private_key.is_some()
     {
         let token = vertex_access_token(&state.backend_client, provider)
@@ -1314,7 +1468,7 @@ pub(crate) async fn send_attempt(
     let send_started = Instant::now();
     let started = tokio::time::Instant::from_std(send_started);
     let response = await_with_hedge(
-        request.send(),
+        crate::request_logs::capture::send(&client, request, capture),
         hedge_deadline(started, timeouts.first_byte),
         earliest_timeout(&[timeouts.write, timeouts.pool, timeouts.total])
             .map(|timeout| started + timeout),
@@ -1354,6 +1508,11 @@ pub(crate) async fn send_attempt(
         )
         .await
         .unwrap_or_else(|error| Bytes::from(format!("read upstream error response: {error}")));
+        let body = if plugin_service {
+            Bytes::from(format!("Plugin service returned HTTP {}", status.as_u16()))
+        } else {
+            body
+        };
         if let Some(dispatch) = &prepared.dispatch {
             dispatch.billing.error_body(status.as_u16(), &body);
         }
@@ -1383,8 +1542,19 @@ pub(crate) async fn send_attempt(
             .is_some_and(|v| v.contains("text/event-stream"))
         {
             let guarded_chat = endpoint == "/v1/chat/completions";
+            let strict_empty = crate::providers::reliability::retry_empty(provider);
+            let native_protocol = if endpoint == "/v1/messages" {
+                Some(StreamProtocol::Claude)
+            } else if crate::protocols::dialects::gemini_route(endpoint).is_some() {
+                Some(StreamProtocol::Gemini)
+            } else if guarded_chat {
+                Some(StreamProtocol::Chat)
+            } else {
+                None
+            };
+            let guarded_stream = guarded_chat || strict_empty && native_protocol.is_some();
             // Chat routing is finalized by the stream outcome, not HTTP headers.
-            if !guarded_chat {
+            if !guarded_stream {
                 state
                     .runtime
                     .reset_route_failure(provider, &prepared.original_model)
@@ -1393,14 +1563,15 @@ pub(crate) async fn send_attempt(
             let mut translation = crate::observability::passthrough::observe(
                 response,
                 send_started,
-                guarded_chat,
+                guarded_stream,
                 positive_duration(timeouts.idle),
             );
-            if guarded_chat {
-                translation = crate::protocols::chat::stream::preflight(
+            if guarded_stream {
+                translation = crate::protocols::chat::stream::preflight_protocol(
                     translation,
                     positive_duration(timeouts.first_byte)
                         .map(|duration| tokio::time::Instant::from_std(send_started + duration)),
+                    strict_empty.then_some(native_protocol).flatten(),
                 )
                 .await
                 .map_err(|failure| AttemptFailure {
@@ -1500,13 +1671,19 @@ pub(crate) async fn send_attempt(
                 remaining_timeout(timeouts.total, send_started.elapsed()),
             )
         };
-        if endpoint == "/v1/chat/completions"
+        if (endpoint == "/v1/chat/completions"
+            || matches!(
+                prepared.downstream_protocol,
+                DownstreamProtocol::MessagesCompat | DownstreamProtocol::GeminiCompat
+            ))
             && prepared.adapter != ResponseAdapter::ResponsesToChat
         {
-            translation = crate::protocols::chat::stream::preflight(
+            translation = crate::protocols::chat::stream::preflight_protocol(
                 translation,
                 positive_duration(timeouts.first_byte)
                     .map(|duration| tokio::time::Instant::from_std(send_started + duration)),
+                crate::providers::reliability::retry_empty(provider)
+                    .then_some(StreamProtocol::Chat),
             )
             .await
             .map_err(|failure| AttemptFailure {
@@ -1519,6 +1696,16 @@ pub(crate) async fn send_attempt(
             })?;
         }
         copy_oaix_headers(&attribution_headers, translation.response.headers_mut());
+        if matches!(
+            prepared.downstream_protocol,
+            DownstreamProtocol::MessagesCompat | DownstreamProtocol::GeminiCompat
+        ) {
+            translation.response = crate::protocols::dialects::translate_body(
+                translation.response,
+                prepared.downstream_protocol,
+                prepared.request_model.clone(),
+            );
+        }
         translation
             .response
             .headers_mut()
@@ -1550,8 +1737,25 @@ pub(crate) async fn send_attempt(
             response: None,
         })?;
         let parsed = serde_json::from_slice::<Value>(&body).ok();
+        if crate::providers::reliability::retry_empty(provider)
+            && (matches!(endpoint, "/v1/chat/completions" | "/v1/messages")
+                || crate::protocols::dialects::gemini_route(endpoint).is_some())
+            && parsed
+                .as_ref()
+                .is_none_or(|value| !crate::providers::reliability::has_output(value))
+        {
+            return Err(AttemptFailure {
+                failure_reason: "empty_response".into(),
+                status: StatusCode::BAD_GATEWAY,
+                detail: "Upstream returned an empty successful response".into(),
+                upstream_url: prepared.url,
+                response: None,
+            });
+        }
         let fact_usage = crate::observability::usage::FactUsage::from_usage(
-            parsed.as_ref().and_then(|v| v.get("usage")),
+            parsed
+                .as_ref()
+                .and_then(|v| v.get("usage").or_else(|| v.get("usageMetadata"))),
         );
         let usage = parsed.as_ref().map(usage).unwrap_or((0, 0, 0));
         let mut output = Response::new(Body::from(body));
@@ -1615,6 +1819,7 @@ pub(crate) async fn send_attempt(
             .get("usage")
             .or_else(|| upstream.get("usageMetadata")),
     );
+    let blocked_upstream = crate::providers::reliability::blocked(&upstream);
     let normalized = match prepared.adapter {
         ResponseAdapter::Search => normalize_search_response(&prepared.url, &upstream),
         ResponseAdapter::ResponsesToChat => responses_to_chat(&upstream, &prepared.original_model),
@@ -1639,6 +1844,22 @@ pub(crate) async fn send_attempt(
         ),
         ResponseAdapter::Passthrough => upstream,
     };
+    if crate::providers::reliability::retry_empty(provider)
+        && !blocked_upstream
+        && (matches!(
+            endpoint,
+            "/v1/chat/completions" | "/v1/messages" | "/v1/responses"
+        ) || crate::protocols::dialects::gemini_route(endpoint).is_some())
+        && !crate::providers::reliability::has_output(&normalized)
+    {
+        return Err(AttemptFailure {
+            failure_reason: "empty_response".into(),
+            status: StatusCode::BAD_GATEWAY,
+            detail: "Upstream returned an empty successful response".into(),
+            upstream_url: prepared.url,
+            response: None,
+        });
+    }
     let normalized = if prepared.downstream_protocol == DownstreamProtocol::ResponsesCompat {
         chat_to_responses_response(&normalized, &prepared.request_model)
     } else {
@@ -1660,6 +1881,26 @@ pub(crate) async fn send_attempt(
         }
     }
     let usage = usage(&normalized);
+    let normalized = if !prepared.downstream_stream
+        && matches!(
+            prepared.downstream_protocol,
+            DownstreamProtocol::MessagesCompat | DownstreamProtocol::GeminiCompat
+        ) {
+        crate::protocols::dialects::chat_response(
+            &normalized,
+            prepared.downstream_protocol,
+            &prepared.request_model,
+        )
+        .map_err(|detail| AttemptFailure {
+            failure_reason: "protocol_error".into(),
+            status: StatusCode::BAD_GATEWAY,
+            detail,
+            upstream_url: prepared.url.clone(),
+            response: None,
+        })?
+    } else {
+        normalized
+    };
     let mut output = if prepared.downstream_stream {
         if prepared.downstream_protocol == DownstreamProtocol::ResponsesCompat {
             synthetic_responses_stream(normalized)
@@ -1669,6 +1910,18 @@ pub(crate) async fn send_attempt(
     } else {
         json_response(StatusCode::OK, normalized)
     };
+    if matches!(
+        prepared.downstream_protocol,
+        DownstreamProtocol::MessagesCompat | DownstreamProtocol::GeminiCompat
+    ) {
+        if prepared.downstream_stream {
+            output = crate::protocols::dialects::translate_body(
+                output,
+                prepared.downstream_protocol,
+                prepared.request_model.clone(),
+            );
+        }
+    }
     copy_oaix_headers(&attribution_headers, output.headers_mut());
     output
         .headers_mut()
@@ -1684,19 +1937,25 @@ pub(crate) async fn send_attempt(
 }
 
 pub(crate) fn usage(value: &Value) -> (i64, i64, i64) {
-    let usage = value.get("usage").unwrap_or(&Value::Null);
+    let usage = value
+        .get("usage")
+        .or_else(|| value.get("usageMetadata"))
+        .unwrap_or(&Value::Null);
     let prompt = usage
         .get("prompt_tokens")
         .or_else(|| usage.get("input_tokens"))
+        .or_else(|| usage.get("promptTokenCount"))
         .and_then(Value::as_i64)
         .unwrap_or(0);
     let completion = usage
         .get("completion_tokens")
         .or_else(|| usage.get("output_tokens"))
+        .or_else(|| usage.get("candidatesTokenCount"))
         .and_then(Value::as_i64)
         .unwrap_or(0);
     let total = usage
         .get("total_tokens")
+        .or_else(|| usage.get("totalTokenCount"))
         .and_then(Value::as_i64)
         .unwrap_or(prompt.saturating_add(completion));
     (prompt, completion, total)

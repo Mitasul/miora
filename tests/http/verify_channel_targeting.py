@@ -31,13 +31,13 @@ def verify(binary, endpoint):
     threading.Thread(target=server.serve_forever,daemon=True).start()
     with tempfile.TemporaryDirectory(prefix='uni-channel-check-') as directory:
         root=Path(directory);port=free_port()
-        config={'providers':[{'provider':p,'engine':'gpt','base_url':f'http://127.0.0.1:{server.server_port}/{p}{endpoint}','api':'upstream-test','model':['gpt-6-astra'],'preferences':{'cooldown_period':0}} for p in ['bad','good']], 'api_keys':[{'api':'admin-test','model':['bad/*']},{'api':'ordinary-test','model':['all']}], 'preferences':{'hedging':{'enabled':True,'max_inflight_attempts':2}}}
+        config={'providers':[{'provider':p,'engine':'gpt','base_url':f'http://127.0.0.1:{server.server_port}/{p}{endpoint}','api':'upstream-test','model':['gpt-6-astra'],'preferences':{'cooldown_period':0}} for p in ['bad','good']], 'api_keys':[{'api':'admin-test','role':'admin','model':['bad/*']},{'api':'ordinary-test','model':['all']}], 'preferences':{'hedging':{'enabled':True,'max_inflight_attempts':2}}}
         (root/'api.json').write_text(json.dumps(config))
         env=dict(os.environ,PORT=str(port),DISABLE_DATABASE='true',UNI_API_CONFIG_PATH=str(root/'api.json'),RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root/'snapshot.json'),UNI_API_SHARED_MEMORY_RESERVATION_PATH=str(root/'ledger'),RUST_REQUEST_SPOOL_DIRECTORY=str(root/'spool'),NO_PROXY='127.0.0.1,localhost',RUST_REQUEST_SPOOL_DISK_RESERVE_BPS='0',RUST_REQUEST_SPOOL_INODE_RESERVE_BPS='0')
         # Do not inherit production export settings into a fixture.
         env={k:v for k,v in env.items() if not k.startswith('FACTS_S3_')}
         with (root/'log').open('w+') as log:
-            process=subprocess.Popen([str(binary)],cwd=root,env=env,stdout=log,stderr=log)
+            process=subprocess.Popen([str(binary)],cwd=root,env=env,stdout=log,stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             def request(method,path,key='admin-test',target=None):
                 c=http.client.HTTPConnection('127.0.0.1',port,timeout=10)
                 headers={'Authorization':'Bearer '+key,'Content-Type':'application/json'}

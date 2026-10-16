@@ -120,7 +120,7 @@ def verify(binary, hedging):
                             "model_timeout": {"default": 0.05}}}
             for name in ("first", "fallback", "third")],
             "api_keys": [
-                {"api": "retry", "model": ["first/*", "fallback/*", "third/*"]},
+                {"api": "retry", "role": "admin", "model": ["first/*", "fallback/*", "third/*"]},
                 {"api": "no-retry", "model": ["first/*", "fallback/*", "third/*"],
                  "preferences": {"AUTO_RETRY": False}}],
             "preferences": {"hedging": {"enabled": hedging, "max_inflight_attempts": 2}}}
@@ -151,7 +151,7 @@ def verify(binary, hedging):
                 conn.close()
 
         with (root / "log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:

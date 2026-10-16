@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="referrer" content="same-origin">
+  <title>登录 · Miora 管理控制台</title>
+  <link rel="icon" type="image/svg+xml" href="/admin/assets/favicon.svg">
+  <script src="/admin/assets/theme.js"></script>
+  <link rel="stylesheet" href="/admin/assets/styles.css">
+  <script type="module" src="/admin/assets/login.js"></script>
+</head>
+<body class="login-body">
+  <div class="login-appearance"><button class="icon-button theme-toggle" type="button" data-theme-toggle aria-label="外观：跟随系统" title="外观：跟随系统"><svg class="icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 3v18a9 9 0 0 0 0-18Z" fill="currentColor"/></svg></button></div>
+  <main class="login-layout">
+    <section class="login-story" aria-labelledby="story-title">
+      <a class="brand login-brand" href="/login" aria-label="Miora 管理控制台"><img class="brand-mark" src="/admin/assets/favicon.svg" width="40" height="40" alt=""><span>miora</span></a>
+      <div class="story-main"><div class="gateway-visual" aria-hidden="true"><img class="gateway-logo" src="/admin/assets/favicon.svg" width="240" height="240" alt=""></div><h1 id="story-title">模型网关</h1></div>
+    </section>
+    <section class="login-panel" aria-labelledby="login-title">
+      <div class="login-card"><h2 id="login-title">登录</h2>
+        <form id="login-form">
+          <div class="field"><label for="username">管理员账号</label><div class="input-icon"><span data-icon="user"></span><input id="username" name="username" autocomplete="username" value="admin" required maxlength="128" spellcheck="false"></div></div>
+          <div class="field"><label for="password">密码</label><div class="input-icon password-input"><span data-icon="lock"></span><input id="password" name="password" type="password" autocomplete="current-password" required maxlength="4096"><button class="icon-button" id="toggle-password" type="button" aria-label="显示密码" aria-pressed="false"><span data-icon="eye"></span></button></div></div>
+          <div id="login-error" class="notice danger" role="alert" hidden></div>
+          <button class="button primary login-submit" id="login-submit" type="submit"><span>登录控制台</span><span data-icon="arrow"></span></button>
+        </form>
+        <div class="login-security"><span data-icon="shield"></span><p>仅限授权管理员访问</p></div>
+      </div>
+    </section>
+  </main>
+  <noscript><p class="noscript">管理控制台需要启用 JavaScript。</p></noscript>
+</body>
+</html>

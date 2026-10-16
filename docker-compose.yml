@@ -1,11 +1,25 @@
 services:
-  uni-api:
-    container_name: uni-api
-    image: yym68686/uni-api:latest
-    environment:
-      - CONFIG_URL=http://file_url/api.yaml
+  miora:
+    build: .
+    image: miora:latest
+    container_name: miora
+    restart: unless-stopped
     ports:
-      - 8001:8000
+      - "8000:8000"
+      # Optional local OAuth callback ports when authorizing on the host machine:
+      # - "1455:1455"
+      # - "8085:8085"
+    environment:
+      - MIORA_ADMIN_USERNAME=admin
+      - MIORA_ADMIN_PASSWORD=change-this-admin-password
+      - MIORA_ADMIN_SECURE_COOKIE=false
+      - MIORA_ADMIN_SESSION_TTL_SECONDS=259200
+      - MIORA_BOOTSTRAP_EMPTY_CONFIG=true
+      - UNI_API_CONFIG_PATH=/home/data/api.yaml
+      - DB_PATH=/home/data/stats.db
+      - MIORA_PLUGIN_STORE_DIR=/home/data/plugins
+      - RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=/home/data/snapshot.json
+      - UNI_API_SHARED_MEMORY_RESERVATION_PATH=/home/data/memory-ledger
+      - RUST_REQUEST_SPOOL_DIRECTORY=/home/data/spool
     volumes:
-      - ./api.yaml:/home/api.yaml
-      - ./uniapi_db:/home/data
+      - ./miora_data:/home/data

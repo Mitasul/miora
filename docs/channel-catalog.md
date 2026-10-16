@@ -1,9 +1,14 @@
 # Dashboard channel selection
 
-The platform dashboard accepts the first configured API key or a key with role
-`admin` / `admin-*`. Ordinary keys can use model services and `/v1/models`, but
-cannot read platform APIs, including their own key metadata. The first key's
-catalog permission does not grant configuration mutation permissions.
+Legacy platform catalog APIs require an explicitly configured `role: admin`
+(case-insensitive exact match). The first key, a singleton key, an `admin-*`
+role, or a token whose text contains `admin` does not gain administrator rights.
+Ordinary keys can use authorized model services and `/v1/models`, but cannot
+inspect these cross-key platform catalogs.
+
+The local Miora console uses a separate password-authenticated account session
+under `/admin/api`; model API keys do not authenticate browser administrators.
+See [admin.md](admin.md) for that security domain.
 
 `GET /v1/api-keys` returns configuration order, position, masked prefix, and a
 stable opaque `key_id`. Full keys and raw rules (which may reference keys) are

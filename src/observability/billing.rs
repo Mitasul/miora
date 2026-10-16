@@ -17,7 +17,6 @@ struct Receipt {
     key_hash: String,
     ids: Vec<String>,
     status: u16,
-    error_sha256: String,
     error_fields: Value,
     secret: String,
     headers_ms: Option<i64>,
@@ -86,12 +85,11 @@ impl BillingAttempt {
         }
     }
     // Observe already-buffered HTTP errors without changing reads, retries or
-    // charging decisions. The digest retains evidence without response content.
+    // charging decisions.
     pub(crate) fn error_body(&self, status: u16, body: &[u8]) {
         if (400..600).contains(&status) && !body.is_empty() {
             if let Ok(mut r) = self.receipt.lock() {
                 if r.status == status {
-                    r.error_sha256 = hex::encode(Sha256::digest(body));
                     r.error_fields =
                         crate::observability::request_trace::error_fields(body, &[&r.secret]);
                 }
@@ -114,7 +112,6 @@ impl BillingAttempt {
         event["upstream_key_hash"] = json!(r.key_hash);
         event["billing_request_ids"] = json!(r.ids);
         event["status"] = json!(r.status);
-        event["upstream_error_sha256"] = json!(r.error_sha256);
         event["trace_detail"] = json!({"headers_at_ms":r.headers_ms,"error":r.error_fields});
         event.as_object_mut()?.remove("dispatch_ms");
         Some(event)
@@ -123,8 +120,8 @@ impl BillingAttempt {
 
 impl Drop for BillingAttempt {
     fn drop(&mut self) {
-        if let Some(event) = self.event() {
-            if let Some(writer) = crate::storage::s3::global() {
+        if let Some(writer) = crate::storage::s3::global() {
+            if let Some(event) = self.event() {
                 writer.enqueue(event);
             }
         }
@@ -310,10 +307,7 @@ mod tests {
         let body = br#"{"code":"INSUFFICIENT_BALANCE","message":"Insufficient account balance"}"#;
         a.error_body(403, body);
         let e = a.event().unwrap();
-        assert_eq!(
-            e["upstream_error_sha256"],
-            "7650844e093da022f530f60d448c6e401ca17d5efd97d38978acf34e43cdcb71"
-        );
+        assert!(e.get("upstream_error_sha256").is_none());
         assert_eq!(
             e["trace_detail"]["error"]["error_code"],
             "INSUFFICIENT_BALANCE"
@@ -324,7 +318,7 @@ mod tests {
         b.headers(&h, 200, "secret");
         b.error_body(200, body);
         b.error_body(403, body);
-        assert_eq!(b.event().unwrap()["upstream_error_sha256"], "");
+        assert!(b.event().unwrap()["trace_detail"]["error"].is_null());
     }
     #[test]
     fn rejects_ambiguous_and_secret_response_identifiers() {

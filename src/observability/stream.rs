@@ -1,10 +1,6 @@
 use crate::protocols::responses::events::has_real_output;
 use crate::protocols::responses::events::item_has_output;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-use std::sync::OnceLock;
 
 pub(crate) struct StreamStats {
     pub(crate) transport_failed: bool,
@@ -18,7 +14,6 @@ pub(crate) struct StreamStats {
     pub(crate) normalized_events: u64,
     pub(crate) usage: Option<Value>,
     pub(crate) incomplete_reason: Option<&'static str>,
-    pub(crate) wire_hash: Option<Sha256>,
     pub(crate) started_at: tokio::time::Instant,
     pub(crate) first_output_ms: Option<f64>,
     pub(crate) response_created_ms: Option<f64>,
@@ -94,11 +89,7 @@ pub struct RawStreamTiming {
 }
 
 impl StreamStats {
-    pub(crate) fn new(attempt_id: &str) -> Self {
-        let sample_bps = wire_hash_sample_bps();
-        let mut sampler = DefaultHasher::new();
-        attempt_id.hash(&mut sampler);
-        let sampled = sample_bps >= 10_000 || sampler.finish() % 10_000 < sample_bps;
+    pub(crate) fn new() -> Self {
         Self {
             transport_failed: false,
             stream_mode: "unknown",
@@ -111,7 +102,6 @@ impl StreamStats {
             normalized_events: 0,
             usage: None,
             incomplete_reason: None,
-            wire_hash: sampled.then(Sha256::new),
             started_at: tokio::time::Instant::now(),
             first_output_ms: None,
             response_created_ms: None,
@@ -132,10 +122,6 @@ impl StreamStats {
     }
 
     pub(crate) fn report(&self) -> Value {
-        let hash = self
-            .wire_hash
-            .as_ref()
-            .map(|hasher| format!("{:x}", hasher.clone().finalize()));
         json!({
             "upstream_bytes": self.upstream_bytes,
             "upstream_chunks": self.upstream_chunks,
@@ -146,8 +132,6 @@ impl StreamStats {
             "normalized_events": self.normalized_events,
             "usage": self.usage,
             "incomplete_reason": self.incomplete_reason,
-            "wire_sha256": hash,
-            "wire_hash_sampled": self.wire_hash.is_some(),
             "stream_mode": self.stream_mode,
             "first_output_ms": self.first_output_ms,
             "response_created_ms": self.response_created_ms,
@@ -213,9 +197,6 @@ impl StreamStats {
         }
         self.downstream_bytes = self.downstream_bytes.saturating_add(wire.len() as u64);
         self.downstream_chunks = self.downstream_chunks.saturating_add(1);
-        if let Some(hasher) = self.wire_hash.as_mut() {
-            hasher.update(wire);
-        }
     }
 
     pub(crate) fn observe_response_connection(&mut self, response: &reqwest::Response) {
@@ -304,19 +285,8 @@ impl StreamStats {
 
 impl Default for StreamStats {
     fn default() -> Self {
-        Self::new("")
+        Self::new()
     }
-}
-
-pub(crate) fn wire_hash_sample_bps() -> u64 {
-    static SAMPLE_BPS: OnceLock<u64> = OnceLock::new();
-    *SAMPLE_BPS.get_or_init(|| {
-        std::env::var("RUST_RESPONSES_WIRE_HASH_SAMPLE_BPS")
-            .ok()
-            .and_then(|value| value.parse::<u64>().ok())
-            .unwrap_or(100)
-            .min(10_000)
-    })
 }
 
 #[cfg(test)]
@@ -324,8 +294,24 @@ mod stage_tests {
     use super::*;
 
     #[test]
+    fn wire_observation_retains_counts_without_content_digests() {
+        let mut stats = StreamStats::new();
+        stats.observe_upstream(b"private upstream");
+        stats.observe_wire(b"private ");
+        stats.observe_wire(b"output");
+        let report = stats.report();
+        assert_eq!(report["upstream_bytes"], 16);
+        assert_eq!(report["upstream_chunks"], 1);
+        assert_eq!(report["downstream_bytes"], 14);
+        assert_eq!(report["downstream_chunks"], 2);
+        assert!(report.get("wire_sha256").is_none());
+        assert!(report.get("wire_hash_sampled").is_none());
+        assert!(!report.to_string().contains("private"));
+    }
+
+    #[test]
     fn raw_milestones_are_one_shot_metadata_and_do_not_reuse_preflight_events() {
-        let mut stats = StreamStats::new("metadata");
+        let mut stats = StreamStats::new();
         assert!(stats.transport_timing().raw_stream.is_none());
         stats.response_created_ms = Some(0.0);
         stats.begin_raw_observation();
@@ -354,7 +340,7 @@ mod stage_tests {
 
     #[test]
     fn missing_stages_are_null_and_empty_chunks_do_not_create_samples() {
-        let mut stats = StreamStats::new("fixture");
+        let mut stats = StreamStats::new();
         stats.observe_upstream(b"");
         stats.observe_wire(b"");
         let timing = serde_json::to_value(stats.transport_timing()).unwrap();
@@ -372,7 +358,7 @@ mod stage_tests {
 
     #[test]
     fn transport_samples_are_monotonic_one_shot_and_not_semantic_output() {
-        let mut stats = StreamStats::new("fixture");
+        let mut stats = StreamStats::new();
         stats.started_at = tokio::time::Instant::now() - std::time::Duration::from_millis(50);
         stats.observe_upstream(b"fragment");
         stats.observe_wire(b"fragment");

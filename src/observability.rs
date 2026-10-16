@@ -1,3 +1,4 @@
+pub(crate) mod backend_logs;
 pub(crate) mod billing;
 pub(crate) mod context;
 pub(crate) mod metrics;

@@ -5,6 +5,8 @@ pub(crate) mod codex;
 pub(crate) mod endpoints;
 pub(crate) mod gemini;
 pub(crate) mod overrides;
+pub(crate) mod parameters;
+pub(crate) mod reliability;
 pub(crate) mod request;
 pub(crate) mod types;
 pub(crate) mod vertex;

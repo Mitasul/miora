@@ -2,9 +2,181 @@
 
 # Miora
 
-基于 [uni-api](https://github.com/yym68686/uni-api) 独立开发的 AI API 网关。
+[English](./README.md) | [简体中文](./README_CN.md)
 
-Miora 保留上游历史、版权声明与 Apache-2.0 许可证。下方暂保留上游文档，部分名称及部署示例仍指向 uni-api。
+基于 [uni-api](https://github.com/yym68686/uni-api) 独立演进的 **纯 Rust 高性能 AI API 网关与管理控制台**。  
+专为从 **Zoaholic / uni-api** 无缝迁移及现代多模型聚合设计：单二进制内嵌管理后台、原生支持 **Codex / Claude / Antigravity（反重力）OAuth PKCE 授权与自动续期**、支持**可动态热加载的渠道插件（Service Protocol v1）**、支持**自选参数（Temperature / Top-P / 思考强度）的单渠道与跨渠道全部模型并发批量测活**。
+
+Miora 保留上游历史、版权声明与 Apache-2.0 许可证。
+
+---
+
+## 核心特性
+
+- **单二进制内嵌现代管理后台（`/login` & `/admin`）**
+  - 前端资源直接编译进 `uni-api-front` 二进制，无需额外部署 Nginx 或 Node.js 前端容器。
+  - 管理员账号与模型调用 API Key 完全隔离（PBKDF2-SHA256 密码校验 + CSRF 防护 + 默认 3 天登录会话 `MIORA_ADMIN_SESSION_TTL_SECONDS=259200`）。
+  - 纯本地 SVG 品牌图标体系，零外部 CDN 依赖、零 Emoji。
+- **三大平台 OAuth PKCE 一键登录与自动刷新**
+  - 原生支持 **OpenAI Codex**、**Anthropic Claude**、**Antigravity（Google Cloud Code Assist 内部接口）** OAuth 2.0 PKCE (`S256`) 授权。
+  - **本地自动回调 + 远程手动粘贴双模式**：本机部署时自动监听回调端口（Codex `127.0.0.1:1455` / Antigravity `127.0.0.1:8085`）并在网页自动完成绑定；Docker 或远程服务器部署时，直接复制浏览器跳转后的完整回调 URL 或 `code#state` 粘贴回弹窗即可入库。
+  - **无感自动续期**：运行时自动检测过期前 60 秒窗口，后台用 `refresh_token` 刷新 `access_token` 并原子回写 `api.yaml`。
+- **全方位模型测活与并发批量测试**
+  - **三处一键测活**：添加/编辑渠道时免保存直连草稿测活、渠道多 Key 账号池单卡测活、渠道列表与独立 `#testing` 页面测活。
+  - **自选测试参数**：支持自定义 `prompt`（默认 `hi`）、`temperature`（预设档位或 `0.0–2.0` 任意输入）、`top_p`、`max_tokens`、`reasoning_effort`（`low`/`medium`/`high`）、协议端点（`/v1/chat/completions` 或 `/v1/responses`）及并发数（`1/3/5/10` 并发）。
+  - **全部模型批量测试与死模型清理**：支持单渠道全部模型并发测活、跨渠道全量模型一键批量测试、按成功/失败状态筛选、一键重测失败项，以及在渠道编辑器内**一键移除测活失败模型**。
+- **内置核心适配器 + 动态渠道插件架构**
+  - 内置 7 大适配器：`OpenAI 兼容 (openai)`、`Anthropic Claude (claude)`、`Google Gemini (gemini)`（含 **Gemini 4 / 3.8** 参数自适应与 `thinkingLevel` 映射）、`Codex (codex)`、`Antigravity 反重力 (antigravity)`、`OpenRouter (openrouter)`、`Azure OpenAI (azure)`。
+  - **外部 HTTP/SSE 渠道插件（`miora.plugin.v1`）**：上传 `.miora.json` 描述文件即可在线安装、启停、升级与回滚自定义渠道服务，无需修改网关核心代码。
+- **三态渠道参数策略与离线请求预览**
+  - 每个渠道独立配置 `preferences.parameter_policy`（继承 / 显式覆写 / 显式移除），支持按模型作用域定制请求体字段与敏感请求头，并提供不消耗 Token 的离线真实请求体预览。
+- **四阶段独立请求日志与精准成本核算**
+  - 独立捕获客户端入站、路由重写、上游出站、上游响应四阶段摘要与可选原文，支持按渠道/每模型自定义 Token 计费单价与趋势下钻。
+
+---
+
+## 快速开始（Docker 部署）
+
+### 1. 使用 Docker Compose 一键启动（推荐）
+
+仓库已内置开箱即用的 `docker-compose.yml`：
+
+```bash
+git clone https://github.com/Mitasul/miora.git
+cd miora
+
+# 1. 创建数据持久化目录（用于存放 api.yaml、数据库与插件）
+mkdir -p miora_data
+
+# 2. 如果已有 Zoaholic / uni-api 的 api.yaml，直接复制进去即可无缝迁移：
+# cp /path/to/your/api.yaml ./miora_data/api.yaml
+
+# 3. 修改 docker-compose.yml 中的 MIORA_ADMIN_PASSWORD（至少 12 位），然后启动：
+docker compose up -d --build
+```
+
+启动后浏览器访问 `http://127.0.0.1:8000/login`，使用用户名 `admin` 与你设置的密码登录后台。
+
+### 2. 使用 `docker run` 启动
+
+```bash
+docker build -t miora:latest .
+
+docker run -d \
+  --name miora \
+  --restart unless-stopped \
+  -p 8000:8000 \
+  -e MIORA_ADMIN_USERNAME=admin \
+  -e MIORA_ADMIN_PASSWORD=your-strong-password-12chars \
+  -e MIORA_ADMIN_SECURE_COOKIE=false \
+  -e MIORA_ADMIN_SESSION_TTL_SECONDS=259200 \
+  -e MIORA_BOOTSTRAP_EMPTY_CONFIG=true \
+  -e UNI_API_CONFIG_PATH=/home/data/api.yaml \
+  -e DB_PATH=/home/data/stats.db \
+  -e MIORA_PLUGIN_STORE_DIR=/home/data/plugins \
+  -v $(pwd)/miora_data:/home/data \
+  miora:latest
+```
+
+> **部署提示**：
+> - 请将宿主机目录挂载到 `/home/data`，并将 `UNI_API_CONFIG_PATH` 指向 `/home/data/api.yaml`（不要单文件挂载 `./api.yaml:/home/api.yaml`，以便后台保存配置与 OAuth 自动刷新时安全执行原子文件替换）。
+> - 若通过 HTTP（非 HTTPS）访问后台，请保持 `MIORA_ADMIN_SECURE_COOKIE=false`；生产环境配置 HTTPS 反代后可设为 `true` 并指定 `MIORA_ADMIN_ORIGIN=https://your-domain.com`。
+
+---
+
+## 从 Zoaholic / uni-api 迁移指南
+
+1. **配置文件 `api.yaml` 直接兼容**
+   - 原有的 `providers`、`api_keys`、模型映射（`upstream_model: alias`）、分组（`groups`）、权重与冷却配置均可直接读取。
+   - Miora 移除了硬编码模型列表，所有渠道均支持在后台通过 **「获取模型」** 在线拉取上游 `/v1/models`，或手动输入任意新模型名称。
+2. **管理员认证域分离**
+   - Miora 不再使用 `api_keys` 中的第一个 Key 作为网页登录密码，而是通过环境变量 `MIORA_ADMIN_PASSWORD`（或 `MIORA_ADMIN_PASSWORD_HASH`）提供独立的 `/login` 管理员会话。
+   - 调用端客户端（如 ChatBox、Cherry Studio、Cursor、Claude Code、Codex CLI）继续使用「访问密钥」页面签发的 `api_keys` 访问 `/v1/chat/completions`、`/v1/responses`、`/v1/messages` 等接口。
+3. **OAuth 渠道（Codex / Claude / Antigravity）迁移与配置**
+   - 在后台 **「渠道与模型」->「添加渠道」** 选择 `Codex`、`Anthropic Claude` 或 `Antigravity (反重力)` 并保存渠道基础信息后，点击渠道行的 **「账号池」** -> **「OAuth 登录」**：
+     - 点击「1. 生成授权链接」并在浏览器打开完成登录；
+     - 若在本地运行，授权完成后会自动捕获回调并添加账号；若在远程 Docker 部署，复制浏览器跳转后的完整 URL（或 Claude 的 `code#state`）粘贴到「3. 回调 URL 或授权码」点提交即可。
+4. **可视分组标签选择器**
+   - 渠道与访问密钥均采用点击式 `.group-chip` 标签选择器（默认内置 `default` / `vip` / `coding` / `fast`，并自动汇总已用分组與支持自定义新建），无需手写逗号分隔字符串。
+
+---
+
+## 插件与内置适配器说明
+
+Miora 的渠道扩展体系分为 **内置适配器（Built-in Adapters）** 与 **外部服务插件（External Service Plugins，`miora.plugin.v1`）**，在后台 **「插件与拦截器」** 页面分开展示与管理：
+
+### 1. 内置适配器一览
+
+| 适配器 ID (`engine`) | 名称 | 默认上游协议与核心能力 |
+| :--- | :--- | :--- |
+| `openai` | OpenAI 兼容 | 标准 `/v1/chat/completions`、`/v1/responses`、`/v1/embeddings`、图像与音频接口，适用 DeepSeek / xAI / SiliconFlow 等 |
+| `claude` | Anthropic Claude | 原生 `/v1/messages`，支持 API Key 与 Claude OAuth (`sk-ant-oat...` 自动携带 `anthropic-beta` 头) |
+| `gemini` | Google Gemini | 原生 `generateContent` / `streamGenerateContent`，支持 **Gemini 4** 自动过滤禁用采样参数与 `thinkingLevel` 映射 |
+| `codex` | Codex | OpenAI Codex Responses 接口，支持 Codex OAuth PKCE 登录、Token 自动刷新与推理强度映射 |
+| `antigravity` | Antigravity (反重力) | Google Cloud Code Assist `v1internal:generateContent` 接口，支持 Google OAuth 登录、自动 `loadCodeAssist` 获取 `project_id` 与流式解包 |
+| `openrouter` | OpenRouter | OpenRouter 聚合路由与模型发现 |
+| `azure` | Azure OpenAI | Azure 部署端点、API Version 与 `api-key` 认证适配 |
+
+### 2. 开发与安装外部渠道插件（`.miora.json`）
+
+当你需要接入私有协议或自定义第三方供应商时，可以编写一个独立的 HTTP/SSE 微服务，并通过 `.miora.json` 描述文件上传到后台 **「插件与拦截器」** 页面完成热注册：
+
+```json
+{
+  "format": "miora.plugin.v1",
+  "manifest": {
+    "id": "custom-supplier",
+    "name": "Custom Supplier",
+    "version": "1.0.0",
+    "api_version": 1,
+    "capabilities": {
+      "endpoints": ["/v1/chat/completions", "/v1/responses"],
+      "streaming": true,
+      "model_discovery": true
+    },
+    "config_schema": [
+      { "name": "api_key", "label": "API Key", "field_type": "secret", "required": true },
+      { "name": "region", "label": "Region", "field_type": "string", "required": false, "default": "us-east-1" }
+    ]
+  },
+  "endpoint": "https://your-plugin-service.internal"
+}
+```
+
+完整协议规范、请求/响应信封格式、签名校验与示例插件请参考：**[渠道插件开发与协议文档 (docs/channel-plugins.md)](docs/channel-plugins.md)** 以及 `examples/plugins/` 目录。
+
+---
+
+## 环境变量速查表
+
+| 环境变量 | 默认值 | 说明 |
+| :--- | :--- | :--- |
+| `MIORA_ADMIN_USERNAME` | `admin` | 管理后台登录用户名（1–128 字节） |
+| `MIORA_ADMIN_PASSWORD` | 无（必填其一） | 管理后台明文密码（12–1024 字节，启动时派生 PBKDF2-SHA256） |
+| `MIORA_ADMIN_PASSWORD_HASH` | 无（必填其一） | 预生成的 `pbkdf2-sha256$...` 密码哈希（可用 `python scripts/hash-admin-password.py` 生成） |
+| `MIORA_ADMIN_SESSION_TTL_SECONDS` | `259200` (3天) | 管理后台登录会话有效期（范围 `300` – `2592000` 秒，即 5 分钟至 30 天） |
+| `MIORA_ADMIN_SECURE_COOKIE` | `true` | 是否仅在 HTTPS 下发送登录 Cookie；本地或纯 HTTP 部署请设为 `false` |
+| `MIORA_ADMIN_ORIGIN` | 自动按 Host 推断 | 显式指定后台允许的 Origin（如 `https://api.example.com`） |
+| `MIORA_BOOTSTRAP_EMPTY_CONFIG` | `false` | 当 `api.yaml` 不存在时是否自动初始化空配置文件 |
+| `UNI_API_CONFIG_PATH` | `./api.yaml` | 渠道与密钥配置文件路径 |
+| `DB_PATH` | `./stats.db` | 用量统计与日志 SQLite 数据库路径 |
+| `MIORA_PLUGIN_STORE_DIR` | `./plugins` | 外部渠道插件与拦截器持久化目录 |
+| `ANTIGRAVITY_OAUTH_CLIENT_SECRET` | 内置默认值 | 可选覆盖 Antigravity OAuth Client Secret |
+
+---
+
+## 详细文档导航
+
+- [启动与从旧版迁移](docs/miora-migration.md)
+- [管理员认证与安全边界](docs/admin.md)
+- [渠道插件开发与 Service Protocol v1](docs/channel-plugins.md)
+- [管理后台界面与静态契约](docs/admin-ui.md)
+- [渠道三态参数策略与离线预览](docs/parameter-policy.md)
+- [四阶段请求日志留存与清理](docs/request-logs.md)
+- [网关功能全景](docs/gateway-features.md)
+- [性能验证报告](docs/performance.md)
+
+下方保留上游历史文档；其中“无前端”、外部控制台、隐式管理员规则和部分部署示例不再适用于 Miora 当前版本。
 
 ---
 
@@ -490,7 +662,9 @@ weighted 模式会明确忽略这些请求数量控制。
 CLI 的 `--limit-concurrency` 在非 legacy 模式也会被拒绝，避免旧部署参数静默恢复
 请求槽位。
 
-当 DB_TYPE 为 postgres 时，需要设置以下环境变量：
+Rust 网关支持 `DATABASE_URL`，优先于 `DB_TYPE` 和各项 `DB_*`，例如 `postgresql://user:password@db.example:5432/miora?sslmode=require`。PostgreSQL URL 默认要求 TLS 并校验证书链及主机名；私有 CA 可设置 `DB_SSL_ROOT_CERT`。也支持持久 SQLite 文件 URL，例如 `sqlite://./data/stats.db`。具体配置与协议/调试功能见 [网关入口、路由与调试](docs/gateway-features.md)。
+
+未设置 `DATABASE_URL` 且 DB_TYPE 为 postgres 时，沿用以下环境变量；默认不启用 TLS，可用 `DB_SSLMODE=require` 启用：
 
 - DB_USER: 数据库用户名，默认为 postgres，选填。
 - DB_PASSWORD: 数据库密码，默认为 mysecretpassword，选填。

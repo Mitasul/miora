@@ -28,3 +28,11 @@ postgres_data/
 uniapi_db/
 alembic/
 alembic.ini
+
+# Local-only build tools, browser QA output, and administrator state
+/.tools/
+/.artifacts/
+/.miora/
+!assets/branding/*.jpg
+!examples/plugins/**/*.json
+!tests/fixtures/plugins/**/*.json

@@ -1,5 +1,4 @@
 use crate::observability::context::request_id;
-use crate::providers::request::build_attempt;
 use crate::providers::request::ALPHA_SEARCH_ENDPOINT;
 use crate::providers::types::PreparedInput;
 use crate::providers::video::video_task_route_for_path;
@@ -41,7 +40,8 @@ pub(crate) const PUBLIC_JSON_ROUTES: &[&str] = &[
 
 pub fn supports(method: &Method, path: &str) -> bool {
     if *method == Method::POST
-        && (PUBLIC_JSON_ROUTES.contains(&path)
+        && (crate::protocols::dialects::gemini_route(path).is_some()
+            || PUBLIC_JSON_ROUTES.contains(&path)
             || matches!(
                 path,
                 "/v1/images/edits"
@@ -64,7 +64,8 @@ pub fn supports(method: &Method, path: &str) -> bool {
 }
 
 pub fn known_path(path: &str) -> bool {
-    PUBLIC_JSON_ROUTES.contains(&path)
+    crate::protocols::dialects::gemini_route(path).is_some()
+        || PUBLIC_JSON_ROUTES.contains(&path)
         || matches!(
             path,
             "/search"
@@ -114,13 +115,17 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
         }
     }
     let query_model = query_value(&uri, "model");
+    let gemini_model = crate::protocols::dialects::gemini_route(&path).map(|(model, _)| model);
     let video_task_route = video_task_route_for_path(&path);
-    let mut request_model = input
-        .payload
-        .as_ref()
-        .and_then(|payload| payload.get("model"))
-        .and_then(Value::as_str)
-        .or(query_model.as_deref())
+    let mut request_model = gemini_model
+        .or_else(|| {
+            input
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("model"))
+                .and_then(Value::as_str)
+                .or(query_model.as_deref())
+        })
         .unwrap_or(input.default_model.as_str())
         .trim()
         .to_owned();
@@ -133,6 +138,17 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
     if request_model.is_empty() {
         return json_error(StatusCode::BAD_REQUEST, "Request model is required");
     }
+    if let Some(context) = &state.request_log {
+        context.client_metadata(
+            &request_model,
+            input
+                .payload
+                .as_ref()
+                .and_then(|payload| payload.get("stream"))
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        );
+    }
     if path != "/v1/moderations"
         && state
             .runtime
@@ -142,6 +158,9 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
     {
         if let Some(text) = input.payload.as_ref().and_then(moderation_text) {
             if let Err(response) = run_moderation_preflight(&state, &headers, &text).await {
+                if let Some(context) = &state.request_log {
+                    context.error_stage("moderation");
+                }
                 return response;
             }
         }
@@ -244,6 +263,9 @@ pub(crate) fn missing_required_field(path: &str, payload: &Value) -> Option<&'st
         })
     };
     match path {
+        _ if crate::protocols::dialects::gemini_route(path).is_some() && missing("contents") => {
+            Some("contents")
+        }
         "/v1/systemone" if !root.get("model").is_some_and(Value::is_string) => Some("model"),
         "/v1/systemone" if !root.contains_key("state") => Some("state"),
         "/v1/systemone" if !root.get("questions").is_some_and(Value::is_object) => {
@@ -401,25 +423,28 @@ pub(crate) async fn run_moderation_preflight(
             ProviderKeySelection::Selected(key) => key,
             _ => continue,
         };
-        let prepared = build_attempt(
-            &provider,
-            &provider_key,
-            model,
-            &original_model,
-            &Method::POST,
-            &uri,
-            "/v1/moderations",
-            headers,
-            &input,
-            &request_id(headers),
-        )
-        .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error))?;
+        let prepared = state
+            .plugins
+            .prepare(
+                &provider,
+                &provider_key,
+                model,
+                &original_model,
+                &Method::POST,
+                &uri,
+                "/v1/moderations",
+                headers,
+                &input,
+                &request_id(headers),
+            )
+            .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error))?;
         match send_attempt(
             state,
             &provider,
             prepared,
             headers,
             "/v1/moderations",
+            &format!("{}-moderation-{}", request_id(headers), provider.name),
             None,
             None,
         )

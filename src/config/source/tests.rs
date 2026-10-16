@@ -29,7 +29,7 @@ api_keys:
     );
     assert_eq!(value["providers"][0]["model_order"][0], "gpt-5.6-sol");
     assert_eq!(value["api_keys"][0]["native_paid_state_safe"], true);
-    assert_eq!(value["revision"].as_str().unwrap().len(), 64);
+    assert!(!value["revision"].as_str().unwrap().is_empty());
 }
 
 #[test]
@@ -284,4 +284,151 @@ api_keys:
     assert_eq!(value["providers"][0]["api"], "AKIA_TEST");
     assert_eq!(value["providers"][1]["api"], "__vertex_oauth__");
     assert_eq!(value["providers"][0]["aws_secret_key"], "secret");
+}
+
+async fn isolated_publisher(label: &str) -> (super::RuntimeConfigPublisher, std::path::PathBuf) {
+    let directory = std::env::temp_dir().join(format!(
+        "miora-source-{label}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+    ));
+    tokio::fs::create_dir_all(&directory).await.unwrap();
+    let source = directory.join("api.json");
+    tokio::fs::write(&source, br#"{"providers":[],"api_keys":[]}"#)
+        .await
+        .unwrap();
+    let publisher = super::RuntimeConfigPublisher {
+        source: super::RuntimeConfigSource::File(source),
+        client: reqwest::Client::new(),
+        snapshot_path: std::sync::Arc::new(directory.join("snapshot.json")),
+        database_disabled: true,
+        discovery_cache: Default::default(),
+    };
+    publisher.publish().await.unwrap();
+    (publisher, directory)
+}
+
+#[tokio::test]
+async fn compare_and_swap_allows_only_one_concurrent_config_update() {
+    let (publisher, directory) = isolated_publisher("cas").await;
+    let metadata = tokio::fs::metadata(directory.join("api.json"))
+        .await
+        .unwrap();
+    let revision = super::file_revision(&metadata).unwrap();
+    let first = json!({"preferences":{"request_limit":1}});
+    let second = json!({"preferences":{"request_limit":2}});
+    let (a, b) = tokio::join!(
+        publisher.apply_patch_revision(&first, &revision),
+        publisher.apply_patch_revision(&second, &revision),
+    );
+    assert_ne!(a.is_ok(), b.is_ok());
+    let rejected = if a.is_err() { a } else { b };
+    assert_eq!(rejected.unwrap_err(), "configuration revision conflict");
+    let config: Value =
+        serde_yaml::from_slice(&tokio::fs::read(directory.join("api.json")).await.unwrap())
+            .unwrap();
+    let snapshot: Value = serde_json::from_slice(
+        &tokio::fs::read(directory.join("snapshot.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(snapshot["preferences"], config["preferences"]);
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test]
+async fn failed_snapshot_publication_restores_the_source() {
+    let (publisher, directory) = isolated_publisher("rollback").await;
+    let original = tokio::fs::read(directory.join("api.json")).await.unwrap();
+    tokio::fs::remove_file(directory.join("snapshot.json"))
+        .await
+        .unwrap();
+    tokio::fs::create_dir(directory.join("snapshot.json"))
+        .await
+        .unwrap();
+    assert!(publisher
+        .apply_patch(&json!({"preferences":{"request_limit":3}}))
+        .await
+        .is_err());
+    assert_eq!(
+        original,
+        tokio::fs::read(directory.join("api.json")).await.unwrap()
+    );
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test]
+async fn invalid_candidate_does_not_change_source_or_snapshot() {
+    let (publisher, directory) = isolated_publisher("invalid").await;
+    let original = tokio::fs::read(directory.join("api.json")).await.unwrap();
+    let snapshot = tokio::fs::read(directory.join("snapshot.json"))
+        .await
+        .unwrap();
+    assert!(publisher
+        .apply_patch(&json!({"providers":"not-an-array"}))
+        .await
+        .is_err());
+    assert_eq!(
+        original,
+        tokio::fs::read(directory.join("api.json")).await.unwrap()
+    );
+    assert_eq!(
+        snapshot,
+        tokio::fs::read(directory.join("snapshot.json"))
+            .await
+            .unwrap()
+    );
+    tokio::fs::remove_dir_all(directory).await.unwrap();
+}
+
+#[tokio::test]
+async fn gateway_features_virtual_model_updates_replace_and_remove_saved_definitions() {
+    let (publisher, directory) = isolated_publisher("virtual-models").await;
+    publisher.apply_patch(&json!({
+        "providers":[{"provider":"primary","base_url":"https://example.test/v1","api":"key","model":["real"]}],
+        "virtual_models":{"first":[{"provider":"primary","model":"real"}],"second":[{"virtual":"first"}]}
+    })).await.unwrap();
+    let source = directory.join("api.json");
+    let metadata = tokio::fs::metadata(&source).await.unwrap();
+    publisher
+        .apply_patch_revision(
+            &json!({"virtual_models":{"remaining":[{"provider":"primary","model":"real"}]}}),
+            &super::file_revision(&metadata).unwrap(),
+        )
+        .await
+        .unwrap();
+    let saved: Value = serde_yaml::from_slice(&tokio::fs::read(&source).await.unwrap()).unwrap();
+    assert_eq!(saved["virtual_models"].as_object().unwrap().len(), 1);
+    assert!(saved["virtual_models"].get("remaining").is_some());
+    let snapshot: Value = serde_json::from_slice(
+        &tokio::fs::read(directory.join("snapshot.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        snapshot["preferences"]["__virtual_models"]
+            .as_object()
+            .unwrap()
+            .len(),
+        1
+    );
+    publisher
+        .apply_patch(&json!({"virtual_models":{}}))
+        .await
+        .unwrap();
+    let saved: Value = serde_yaml::from_slice(&tokio::fs::read(&source).await.unwrap()).unwrap();
+    assert!(saved["virtual_models"].as_object().unwrap().is_empty());
+    let snapshot: Value = serde_json::from_slice(
+        &tokio::fs::read(directory.join("snapshot.json"))
+            .await
+            .unwrap(),
+    )
+    .unwrap();
+    assert!(snapshot["preferences"].get("__virtual_models").is_none());
+    tokio::fs::remove_dir_all(directory).await.unwrap();
 }

@@ -23,7 +23,50 @@ use std::time::Duration;
 
 const INTERNAL_PREFIX: &str = "/_internal/rust-responses";
 
-pub async fn handler(State(state): State<AppState>, mut request: Request) -> Response<Body> {
+pub async fn handler(State(state): State<AppState>, request: Request) -> Response<Body> {
+    // The browser control plane is same-origin and cookie authenticated. Never
+    // apply the public inference API's permissive CORS policy to these routes.
+    if crate::admin::supports(request.uri().path()) {
+        return crate::admin::handle(&state, request).await;
+    }
+    if let Some(response) = crate::api::admin_ui::handle(&state, &request) {
+        return response;
+    }
+    inference(state, request).await
+}
+
+pub(crate) async fn inference(mut state: AppState, mut request: Request) -> Response<Body> {
+    if request.uri().path() == "/v1beta/models"
+        || crate::protocols::dialects::gemini_route(request.uri().path()).is_some()
+    {
+        if let Some(query) = request.uri().query() {
+            let pairs = url::form_urlencoded::parse(query.as_bytes())
+                .into_owned()
+                .collect::<Vec<_>>();
+            if let Some((_, key)) = pairs.iter().find(|(name, _)| name == "key") {
+                if crate::routing::access::extract_api_key(request.headers()).is_none() {
+                    let Ok(value) = HeaderValue::from_str(key) else {
+                        return json_error(StatusCode::BAD_REQUEST, "Invalid API key header");
+                    };
+                    request.headers_mut().insert("x-goog-api-key", value);
+                }
+                let query = url::form_urlencoded::Serializer::new(String::new())
+                    .extend_pairs(pairs.iter().filter(|(name, _)| name != "key"))
+                    .finish();
+                let path = request.uri().path();
+                let target = if query.is_empty() {
+                    path.to_owned()
+                } else {
+                    format!("{path}?{query}")
+                };
+                *request.uri_mut() = target.parse().expect("existing path and encoded query");
+            }
+        }
+    }
+    // A request, including every retry/hedged attempt and its response stream,
+    // observes one immutable generation. Management mutates the shared registry,
+    // never this request-local view.
+    state.plugins = std::sync::Arc::new(state.plugins.pin());
     request
         .extensions_mut()
         .insert(crate::observability::timing::RequestArrival::now());
@@ -36,6 +79,18 @@ pub async fn handler(State(state): State<AppState>, mut request: Request) -> Res
         request.uri().path().trim_end_matches('/'),
     ) {
         let id = crate::observability::context::request_id(request.headers());
+        if let Some(context) = crate::request_logs::capture::LogContext::start(
+            &state.request_logs,
+            state.plugins.clone(),
+            &id,
+            request.method(),
+            request.uri().path(),
+            request.headers(),
+        ) {
+            context.add_secret(&state.control_token);
+            state.persistence = state.persistence.with_request_log(context.clone());
+            state.request_log = Some(context);
+        }
         if let Ok(value) = HeaderValue::from_str(&id) {
             request.headers_mut().insert("x-request-id", value);
         }
@@ -47,10 +102,14 @@ pub async fn handler(State(state): State<AppState>, mut request: Request) -> Res
     } else {
         None
     };
+    let request_log = state.request_log.clone();
     let mut response = handler_inner(state, request).await;
     cors.apply(&mut response);
     if let Some(trace) = trace {
         response = trace.response(response);
+    }
+    if let Some(context) = request_log {
+        response = context.response(response);
     }
     response
 }
@@ -58,7 +117,17 @@ pub async fn handler(State(state): State<AppState>, mut request: Request) -> Res
 async fn handler_inner(state: AppState, request: Request) -> Response<Body> {
     let request = match crate::transport::decompression::decode(request).await {
         Ok(request) => request,
-        Err(response) => return response,
+        Err(response) => {
+            if let Some(context) = &state.request_log {
+                context.error_stage("request_decompression");
+            }
+            return response;
+        }
+    };
+    let request = if let Some(context) = &state.request_log {
+        context.client_request(request)
+    } else {
+        request
     };
     let raw_path = request.uri().path();
     let path = raw_path.trim_end_matches('/');
@@ -240,11 +309,26 @@ async fn handler_inner(state: AppState, request: Request) -> Response<Body> {
             .unwrap_or(false)
         {
             if let Ok(payload) = storage.parse_json().await {
+                if let (Some(context), Some(model)) = (
+                    state.request_log.as_ref(),
+                    payload.get("model").and_then(serde_json::Value::as_str),
+                ) {
+                    context.client_metadata(
+                        model.trim(),
+                        payload
+                            .get("stream")
+                            .and_then(crate::upstream::responses::prepare::pydantic_bool)
+                            .unwrap_or(false),
+                    );
+                }
                 if let Some(text) = crate::api::gateway::moderation_text(&payload) {
                     if let Err(response) =
                         crate::api::gateway::run_moderation_preflight(&state, &parts.headers, &text)
                             .await
                     {
+                        if let Some(context) = &state.request_log {
+                            context.error_stage("moderation");
+                        }
                         if let Some(owner) = owner {
                             owner.release().await;
                         }
@@ -275,6 +359,7 @@ async fn handler_inner(state: AppState, request: Request) -> Response<Body> {
         };
         match prepare_request(
             &state.runtime,
+            state.plugins.clone(),
             state.codex_oauth.clone(),
             state.persistence.clone(),
             &parts,

@@ -27,7 +27,6 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue, Response};
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine;
 use serde_json::{json, Map, Value};
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::sync::Arc;
 use url::Url;
@@ -68,6 +67,7 @@ pub enum ResponsesPreparation {
 }
 
 pub struct ResponsesRoute {
+    pub(crate) plugins: Arc<crate::plugins::PluginRegistry>,
     pub(crate) store: GatewayRuntime,
     pub(crate) codex_oauth: CodexOAuthManager,
     pub(crate) persistence: Persistence,
@@ -321,6 +321,9 @@ impl ResponsesRoute {
             let attempt_number = self.routing_attempts;
             let provider = self.providers[self.cursor % self.providers.len()].clone();
             self.cursor += 1;
+            if !crate::routing::access::virtual_target_accepts(&provider, self.last_status) {
+                continue;
+            }
             self.routing_attempts = self.routing_attempts.saturating_add(1);
             let original_model = provider
                 .models
@@ -386,7 +389,7 @@ impl ResponsesRoute {
                 codex_account_id = auth.account_id;
             }
             let mut payload = self.base_payload.clone();
-            compile_payload(
+            let mut policy_report = compile_payload(
                 &mut payload,
                 &provider,
                 &self.request_model,
@@ -410,6 +413,21 @@ impl ResponsesRoute {
                 HeaderValue::from_str(&account_id)
                     .map_err(|_| "Codex account ID is not a valid header".to_owned())?;
                 headers.insert("chatgpt-account-id".into(), account_id);
+            }
+            crate::providers::parameters::apply_native_headers(
+                &provider,
+                &self.endpoint,
+                &mut headers,
+                &mut policy_report,
+            )?;
+            self.plugins.native_headers(&engine, &mut headers)?;
+            if let Some((name, value)) = crate::providers::request::caller_auth(&provider)? {
+                headers.retain(|name, _| {
+                    !["authorization", "x-api-key", "api-key", "x-goog-api-key"]
+                        .iter()
+                        .any(|auth| name.eq_ignore_ascii_case(auth))
+                });
+                headers.insert(name.into(), value);
             }
             let timeout = resolve_timeouts(
                 &self.snapshot,
@@ -454,6 +472,12 @@ impl ResponsesRoute {
                 self.stream,
             );
             return Ok(Some(Plan {
+                capture_requested_model: Some(self.request_model.clone()),
+                capture_sent_model: payload
+                    .get("model")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
+                capture_sensitive_headers: policy_report.sensitive_headers.clone(),
                 dispatch: self.arrival.map(|arrival| {
                     arrival.attempt(
                         crate::observability::metrics::MetricKey::new(
@@ -576,7 +600,12 @@ impl ResponsesRoute {
                     .await;
             }
         }
-        policy.retryable && self.has_attempts_remaining()
+        (policy.retryable
+            || crate::routing::access::virtual_fallback_on(
+                &self.providers[self.cursor.min(self.providers.len())..],
+                status,
+            ))
+            && self.has_attempts_remaining()
     }
 
     pub async fn record_success(&self) {
@@ -756,7 +785,6 @@ impl ResponsesRoute {
             .or_else(|| outcome.get("body"))
             .and_then(Value::as_str)
             .unwrap_or_default();
-        let error_sha256 = (!detail.is_empty()).then(|| sha256_hex(detail));
         let duration_ms = attempt
             .started_at
             .elapsed()
@@ -797,7 +825,6 @@ impl ResponsesRoute {
                 "success": success,
                 "outcome": attempt_outcome,
                 "provider_model_unavailable": provider_model_unavailable,
-                "error_sha256": error_sha256,
                 "duration_ms": duration_ms,
                 "transport_timing": outcome.get("transport_timing"),
                 "response_created_ms": outcome.get("response_created_ms"),
@@ -833,7 +860,6 @@ impl ResponsesRoute {
             "provider_model_unavailable": provider_model_unavailable,
             "status_origin": failure_origin(outcome),
             "error": crate::observability::request_trace::error_fields(detail.as_bytes(), &[self.last_provider_key.as_deref().unwrap_or_default(), self.api_key.token.as_ref()]),
-            "error_sha256": error_sha256,
             "duration_ms": duration_ms,
             "transport_timing": outcome.get("transport_timing"),
             "response_created_ms": outcome.get("response_created_ms"),
@@ -923,6 +949,16 @@ impl ResponsesRoute {
             response_completed: (self.stream && self.endpoint == "/v1/responses")
                 .then_some(kind == "completed"),
             fact_usage: crate::observability::usage::FactUsage::from_usage(outcome.get("usage")),
+            usage_pricing: crate::storage::usage::pricing_for_model(
+                final_provider
+                    .and_then(|name| {
+                        self.providers
+                            .iter()
+                            .find(|provider| provider.name.as_ref() == name)
+                    })
+                    .and_then(|provider| provider.preferences.get("usage_pricing")),
+                &self.request_model,
+            ),
             stream: self.stream,
             upstream_model: final_actual_model.unwrap_or_default().to_owned(),
             status,
@@ -947,42 +983,38 @@ impl ResponsesRoute {
             completion_price,
             timing_spans: summary.to_string(),
         });
-        eprintln!(
-            "{}",
-            json!({
-                "kind": "log",
-                "fugue_table": "request_facts",
-                "event": "request_summary",
-                "event_type": "request_summary",
-                "severity": event_severity(status, kind),
-                "source": "uni-api-ember",
-                "message": "uni-api-ember native Responses request finished",
-                "request_id": self.request_id,
-                "trace_id": self.request_id,
-                "path": "/v1/responses",
-                "path_template": "/v1/responses",
-                "route": "POST /v1/responses",
-                "route_id": "POST /v1/responses",
-                "method": "POST",
-                "model": self.request_model,
-                "provider": final_provider,
-                "channel": final_provider,
-                "role": self.api_key.role.as_ref(),
-                "actual_model": final_actual_model,
-                "status_code": status,
-                "status_class": status_class(status),
-                "duration_ms": elapsed_ms,
-                "upstream_ms": self.upstream_duration_ms,
-                "bytes_in": self.request_body_bytes,
-                "bytes_out": outcome.get("downstream_bytes").and_then(Value::as_u64).unwrap_or(0),
-                "streaming": self.stream,
-                "error_type": (!success || status >= 400).then_some(kind),
-                "status_origin": status_origin,
-                "error_sha256": terminal_error_sha256(success, detail),
-                "summary_json": summary.to_string(),
-                "rust_responses_data_plane": true,
-            })
-        );
+        crate::observability::backend_logs::event(json!({
+            "kind": "log",
+            "fugue_table": "request_facts",
+            "event": "request_summary",
+            "event_type": "request_summary",
+            "severity": event_severity(status, kind),
+            "source": "uni-api-ember",
+            "message": "uni-api-ember native Responses request finished",
+            "request_id": self.request_id,
+            "trace_id": self.request_id,
+            "path": "/v1/responses",
+            "path_template": "/v1/responses",
+            "route": "POST /v1/responses",
+            "route_id": "POST /v1/responses",
+            "method": "POST",
+            "model": self.request_model,
+            "provider": final_provider,
+            "channel": final_provider,
+            "role": self.api_key.role.as_ref(),
+            "actual_model": final_actual_model,
+            "status_code": status,
+            "status_class": status_class(status),
+            "duration_ms": elapsed_ms,
+            "upstream_ms": self.upstream_duration_ms,
+            "bytes_in": self.request_body_bytes,
+            "bytes_out": outcome.get("downstream_bytes").and_then(Value::as_u64).unwrap_or(0),
+            "streaming": self.stream,
+            "error_type": (!success || status >= 400).then_some(kind),
+            "status_origin": status_origin,
+            "summary_json": summary.to_string(),
+            "rust_responses_data_plane": true,
+        }));
     }
 
     pub(crate) fn auto_retry(&self) -> bool {
@@ -1030,7 +1062,7 @@ impl ResponsesRoute {
             model: self.request_model.clone(),
             upstream_model: self.last_original_model.clone().unwrap_or_default(),
             api_key: self.api_key.token.to_string(),
-            provider_api_key: provider_key.clone(),
+            provider_api_key: provider.credential.statistics_key(provider_key),
             success,
             endpoint: self.endpoint.clone(),
             stream: self.stream,
@@ -1092,23 +1124,49 @@ pub(crate) fn compile_payload(
     original_model: &str,
     engine: &str,
     wants_compact: bool,
-) -> Result<(), String> {
-    let root = payload
-        .as_object_mut()
-        .ok_or_else(|| "native Responses payload is not an object".to_owned())?;
-    root.insert("model".into(), Value::String(original_model.to_owned()));
-    if engine == "codex" {
-        for key in [
-            "previous_response_id",
-            "prompt_cache_retention",
-            "safety_identifier",
-        ] {
-            root.remove(key);
+) -> Result<crate::providers::parameters::PolicyReport, String> {
+    let client = provider
+        .preferences
+        .contains_key("parameter_policy")
+        .then(|| payload.clone());
+    {
+        let root = payload
+            .as_object_mut()
+            .ok_or_else(|| "native Responses payload is not an object".to_owned())?;
+        root.insert("model".into(), Value::String(original_model.to_owned()));
+        if engine == "codex" {
+            for key in [
+                "previous_response_id",
+                "prompt_cache_retention",
+                "safety_identifier",
+            ] {
+                root.remove(key);
+            }
+            root.entry("instructions")
+                .or_insert(Value::String(String::new()));
         }
-        root.entry("instructions")
-            .or_insert(Value::String(String::new()));
     }
-    apply_overrides(root, provider, request_model);
+    let origin = crate::providers::parameters::capture_origin(
+        provider,
+        client.as_ref().unwrap_or(&Value::Null),
+        payload,
+    );
+    apply_overrides(payload.as_object_mut().unwrap(), provider, request_model);
+    let endpoint = if wants_compact {
+        "/v1/responses/compact"
+    } else {
+        "/v1/responses"
+    };
+    let mut report = crate::providers::parameters::apply_body(
+        provider,
+        request_model,
+        endpoint,
+        origin.as_ref(),
+        payload,
+    )?;
+    let before_constraints = report.configured.then(|| payload.clone());
+    let root = payload.as_object_mut().unwrap();
+    crate::providers::overrides::enforce_protocol_constraints(root, provider);
     if engine == "codex" {
         strip_codex_fields(root);
         if wants_compact {
@@ -1118,7 +1176,10 @@ pub(crate) fn compile_payload(
     if normalization_enabled(provider, request_model, original_model) {
         normalize_response_root(root)?;
     }
-    Ok(())
+    if let Some(before) = before_constraints {
+        crate::providers::parameters::record_constraints(&before, payload, &mut report);
+    }
+    Ok(report)
 }
 
 pub(crate) fn strip_codex_fields(root: &mut Map<String, Value>) {
@@ -1408,16 +1469,6 @@ pub(crate) fn event_severity(status: u16, outcome: &str) -> &'static str {
     } else {
         "info"
     }
-}
-
-pub(crate) fn sha256_hex(value: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(value.as_bytes());
-    format!("{:x}", hasher.finalize())
-}
-
-pub(crate) fn terminal_error_sha256(success: bool, detail: &str) -> Option<String> {
-    (!success && !detail.is_empty()).then(|| sha256_hex(detail))
 }
 
 pub(crate) fn native_attempt_id(request_id: &str, attempt: usize) -> String {

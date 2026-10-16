@@ -44,6 +44,26 @@ impl RetryPolicy {
         if targeted {
             return 1;
         }
+        if providers.first().is_some_and(|provider| {
+            matches!(
+                provider.credential,
+                crate::config::snapshot::ProviderCredential::CallerSupplied(_)
+            )
+        }) {
+            return 1;
+        }
+        if providers
+            .first()
+            .is_some_and(|provider| provider.preferences.contains_key("__virtual_alias"))
+        {
+            return match self {
+                Self::Automatic => providers.len().min(MAX_ATTEMPTS),
+                Self::Retries(retries) => retries
+                    .saturating_add(1)
+                    .min(providers.len())
+                    .min(MAX_ATTEMPTS),
+            };
+        }
         match self {
             Self::Retries(retries) => retries.saturating_add(1).min(MAX_ATTEMPTS),
             Self::Automatic => {

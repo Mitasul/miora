@@ -4,12 +4,99 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::mpsc;
-use tokio_postgres::{Client, NoTls};
+use tokio_postgres::Client;
 
 const DEFAULT_WRITE_QUEUE: usize = 4096;
 
+#[cfg(test)]
+mod gateway_features {
+    use super::*;
+    #[test]
+    fn postgres_url_preserves_escaped_credentials_and_requires_verified_tls() {
+        let config = postgres_url_config("postgresql://user:p%40ss%3Aword@db.example.test:6543/app?sslmode=verify-full&connect_timeout=9").unwrap();
+        assert_eq!(config.get_user(), Some("user"));
+        assert_eq!(config.get_password(), Some(b"p@ss:word".as_slice()));
+        assert_eq!(config.get_ports(), &[6543]);
+        assert_eq!(config.get_dbname(), Some("app"));
+        assert_eq!(
+            config.get_ssl_mode(),
+            tokio_postgres::config::SslMode::Require
+        );
+        assert_eq!(
+            postgres_url_config("postgres://user@db/app")
+                .unwrap()
+                .get_ssl_mode(),
+            tokio_postgres::config::SslMode::Require
+        );
+        assert_eq!(
+            postgres_url_config("postgres://user@db/app?sslmode=disable")
+                .unwrap()
+                .get_ssl_mode(),
+            tokio_postgres::config::SslMode::Disable
+        );
+        assert!(
+            postgres_url_config("postgres://user:private@db/app?unknown=1")
+                .unwrap_err()
+                .find("private")
+                .is_none()
+        );
+    }
+    #[test]
+    fn sqlite_urls_are_file_backed_and_do_not_silently_ignore_options() {
+        assert_eq!(
+            sqlite_url_path("sqlite://./data/stats.db").unwrap(),
+            "./data/stats.db"
+        );
+        assert_eq!(
+            sqlite_url_path("sqlite:///data/stats.db").unwrap(),
+            "/data/stats.db"
+        );
+        assert!(sqlite_url_path("sqlite::memory:").is_err());
+        assert!(sqlite_url_path("sqlite://file.db?mode=memory").is_err());
+    }
+}
+
+fn sqlite_url_path(value: &str) -> Result<String, String> {
+    let path = value
+        .strip_prefix("sqlite://")
+        .or_else(|| value.strip_prefix("sqlite:"))
+        .unwrap_or("");
+    if path.is_empty() || path.contains('?') || path.contains('#') || path == ":memory:" {
+        return Err(
+            "DATABASE_URL requires a persistent SQLite file path without query parameters".into(),
+        );
+    }
+    Ok(path.to_owned())
+}
+
+fn postgres_url_config(value: &str) -> Result<tokio_postgres::Config, String> {
+    let (base, query) = value.split_once('?').unwrap_or((value, ""));
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes())
+        .into_owned()
+        .collect::<Vec<_>>();
+    let mut has_mode = false;
+    for (name, mode) in &mut pairs {
+        if name == "sslmode" {
+            has_mode = true;
+            if matches!(mode.as_str(), "verify-full" | "verify-ca") {
+                *mode = "require".into();
+            }
+        }
+    }
+    if !has_mode {
+        pairs.push(("sslmode".into(), "require".into()));
+    }
+    let query = url::form_urlencoded::Serializer::new(String::new())
+        .extend_pairs(pairs)
+        .finish();
+    format!("{base}?{query}")
+        .parse()
+        .map_err(|_| "Invalid PostgreSQL DATABASE_URL connection parameters".into())
+}
+
 #[derive(Clone)]
 pub struct Persistence {
+    request_log: Option<crate::request_logs::capture::LogContext>,
     fact_writer: Option<crate::storage::s3::FactWriter>,
     backend: Arc<Backend>,
     writer: Option<mpsc::Sender<WriteEvent>>,
@@ -28,6 +115,7 @@ pub struct RequestStat {
     pub failure_reason: Option<String>,
     pub response_completed: Option<bool>,
     pub fact_usage: crate::observability::usage::FactUsage,
+    pub usage_pricing: Option<Value>,
     pub stream: bool,
     pub upstream_model: String,
     pub status: u16,
@@ -85,22 +173,34 @@ impl Persistence {
     pub async fn initialize(disabled: bool) -> Result<Self, String> {
         if disabled {
             return Ok(Self {
+                request_log: None,
                 fact_writer: crate::storage::s3::global(),
                 backend: Arc::new(Backend::Disabled),
                 writer: None,
             });
         }
         let fact_writer = crate::storage::s3::global();
-        let backend = match std::env::var("DB_TYPE")
-            .unwrap_or_else(|_| "sqlite".into())
-            .trim()
-            .to_ascii_lowercase()
-            .as_str()
-        {
+        let database_url = std::env::var("DATABASE_URL")
+            .ok()
+            .filter(|value| !value.trim().is_empty());
+        let database_type = match database_url.as_deref() {
+            Some(value)
+                if value.starts_with("postgres://") || value.starts_with("postgresql://") =>
+            {
+                "postgres".to_owned()
+            }
+            Some(value) if value.starts_with("sqlite:") => "sqlite".to_owned(),
+            Some(_) => {
+                return Err("DATABASE_URL must use postgres://, postgresql:// or sqlite:".into())
+            }
+            None => std::env::var("DB_TYPE").unwrap_or_else(|_| "sqlite".into()),
+        };
+        let backend = match database_type.trim().to_ascii_lowercase().as_str() {
             "sqlite" => {
-                let path = PathBuf::from(
-                    std::env::var("DB_PATH").unwrap_or_else(|_| "./data/stats.db".into()),
-                );
+                let path = PathBuf::from(match database_url.as_deref() {
+                    Some(value) => sqlite_url_path(value)?,
+                    None => std::env::var("DB_PATH").unwrap_or_else(|_| "./data/stats.db".into()),
+                });
                 initialize_sqlite(path.clone()).await?;
                 Arc::new(Backend::Sqlite { path })
             }
@@ -119,8 +219,44 @@ impl Persistence {
                         std::env::var("DB_PASSWORD").unwrap_or_else(|_| "mysecretpassword".into()),
                     )
                     .dbname(std::env::var("DB_NAME").unwrap_or_else(|_| "postgres".into()));
+                if let Some(value) = database_url.as_deref() {
+                    config = postgres_url_config(value)?;
+                } else {
+                    let mode = std::env::var("DB_SSLMODE").unwrap_or_else(|_| "disable".into());
+                    config.ssl_mode(match mode.as_str() {
+                        "disable" => tokio_postgres::config::SslMode::Disable,
+                        "prefer" => tokio_postgres::config::SslMode::Prefer,
+                        "require" | "verify-full" | "verify-ca" => {
+                            tokio_postgres::config::SslMode::Require
+                        }
+                        _ => return Err("Unsupported DB_SSLMODE".into()),
+                    });
+                }
+                let mut roots = rustls::RootCertStore::empty();
+                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                if let Ok(path) = std::env::var("DB_SSL_ROOT_CERT") {
+                    use rustls::pki_types::pem::PemObject;
+                    for certificate in rustls::pki_types::CertificateDer::pem_file_iter(path)
+                        .map_err(|error| format!("read PostgreSQL root certificate: {error}"))?
+                    {
+                        roots
+                            .add(certificate.map_err(|error| {
+                                format!("parse PostgreSQL root certificate: {error}")
+                            })?)
+                            .map_err(|error| {
+                                format!("load PostgreSQL root certificate: {error}")
+                            })?;
+                    }
+                }
+                let tls = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(
+                    rustls::crypto::ring::default_provider(),
+                ))
+                .with_safe_default_protocol_versions()
+                .map_err(|error| error.to_string())?
+                .with_root_certificates(roots)
+                .with_no_client_auth();
                 let (client, connection) = config
-                    .connect(NoTls)
+                    .connect(tokio_postgres_rustls::MakeRustlsConnect::new(tls))
                     .await
                     .map_err(|error| format!("connect PostgreSQL stats database: {error}"))?;
                 tokio::spawn(async move {
@@ -149,6 +285,7 @@ impl Persistence {
         let (writer, receiver) = mpsc::channel(queue_capacity);
         spawn_writer(backend.clone(), receiver);
         Ok(Self {
+            request_log: None,
             fact_writer,
             backend,
             writer: Some(writer),
@@ -159,7 +296,19 @@ impl Persistence {
         matches!(self.backend.as_ref(), Backend::Disabled)
     }
 
+    pub(crate) fn with_request_log(
+        &self,
+        context: crate::request_logs::capture::LogContext,
+    ) -> Self {
+        let mut value = self.clone();
+        value.request_log = Some(context);
+        value
+    }
+
     pub fn record_request(&self, stat: RequestStat) {
+        if let Some(context) = &self.request_log {
+            context.record_request(&stat);
+        }
         if let Some(writer) = &self.fact_writer {
             writer.enqueue(crate::storage::s3::request_event(&stat));
         }
@@ -171,6 +320,9 @@ impl Persistence {
         }
     }
     pub fn record_channel(&self, stat: ChannelStat) {
+        if let Some(context) = &self.request_log {
+            context.record_channel(&stat);
+        }
         if let Some(writer) = &self.fact_writer {
             writer.enqueue(crate::storage::s3::attempt_event(&stat));
         }
@@ -192,6 +344,33 @@ impl Persistence {
                     .map_err(|error| format!("join SQLite stats query: {error}"))?
             }
             Backend::Postgres { client } => postgres_stats_summary(client, hours).await,
+        }
+    }
+
+    pub(crate) async fn model_usage(
+        &self,
+        start: i64,
+        end: i64,
+        model: Option<&str>,
+        channel: Option<&str>,
+    ) -> Result<Value, String> {
+        match self.backend.as_ref() {
+            Backend::Disabled => {
+                Ok(json!({"available":false,"usage":[],"reason":"database_disabled"}))
+            }
+            Backend::Sqlite { path } => {
+                let path = path.clone();
+                let model = model.map(str::to_owned);
+                let channel = channel.map(str::to_owned);
+                tokio::task::spawn_blocking(move || {
+                    super::usage::sqlite(&path, start, end, model.as_deref(), channel.as_deref())
+                })
+                .await
+                .map_err(|error| error.to_string())?
+            }
+            Backend::Postgres { client } => {
+                super::usage::postgres(client, start, end, model, channel).await
+            }
         }
     }
 
@@ -316,13 +495,14 @@ async fn initialize_sqlite(path: PathBuf) -> Result<(), String> {
         let connection = sqlite_connection(&path)?;
         connection
             .execute_batch(SQLITE_SCHEMA)
-            .map_err(|error| format!("initialize SQLite stats schema: {error}"))
+            .map_err(|error| format!("initialize SQLite stats schema: {error}"))?;
+        super::usage::migrate_sqlite(&connection)
     })
     .await
     .map_err(|error| format!("join SQLite schema initialization: {error}"))?
 }
 
-fn sqlite_connection(path: &PathBuf) -> Result<Connection, String> {
+pub(super) fn sqlite_connection(path: &PathBuf) -> Result<Connection, String> {
     let connection = Connection::open(path)
         .map_err(|error| format!("open SQLite stats database {}: {error}", path.display()))?;
     connection
@@ -339,7 +519,7 @@ fn sqlite_write(path: &PathBuf, event: WriteEvent) -> Result<(), String> {
     match event {
         WriteEvent::Request(stat) => connection
             .execute(
-                "INSERT INTO request_stats (request_id, trace_id, endpoint, client_ip, process_time, first_response_time, provider, model, api_key, is_flagged, text, prompt_tokens, completion_tokens, total_tokens, prompt_price, completion_price, timing_spans) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
+                "INSERT INTO request_stats (request_id, trace_id, endpoint, client_ip, process_time, first_response_time, provider, model, api_key, is_flagged, text, prompt_tokens, completion_tokens, total_tokens, prompt_price, completion_price, timing_spans, usage_details) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)",
                 params![
                     stat.request_id,
                     stat.trace_id,
@@ -358,6 +538,7 @@ fn sqlite_write(path: &PathBuf, event: WriteEvent) -> Result<(), String> {
                     stat.prompt_price,
                     stat.completion_price,
                     stat.timing_spans,
+                    super::usage::snapshot(&stat),
                 ],
             )
             .map(|_| ())
@@ -390,7 +571,7 @@ async fn postgres_write(client: &Client, event: WriteEvent) -> Result<(), String
     match event {
         WriteEvent::Request(stat) => client
             .execute(
-                "INSERT INTO request_stats (request_id, trace_id, endpoint, client_ip, process_time, first_response_time, provider, model, api_key, is_flagged, text, prompt_tokens, completion_tokens, total_tokens, prompt_price, completion_price, timing_spans) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)",
+                "INSERT INTO request_stats (request_id, trace_id, endpoint, client_ip, process_time, first_response_time, provider, model, api_key, is_flagged, text, prompt_tokens, completion_tokens, total_tokens, prompt_price, completion_price, timing_spans, usage_details) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)",
                 &[
                     &stat.request_id,
                     &stat.trace_id,
@@ -409,6 +590,7 @@ async fn postgres_write(client: &Client, event: WriteEvent) -> Result<(), String
                     &stat.prompt_price,
                     &stat.completion_price,
                     &stat.timing_spans,
+                    &super::usage::snapshot(&stat),
                 ],
             )
             .await
@@ -783,6 +965,7 @@ CREATE TABLE IF NOT EXISTS request_stats (
     prompt_price REAL DEFAULT 0,
     completion_price REAL DEFAULT 0,
     timing_spans TEXT,
+    usage_details TEXT,
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 CREATE INDEX IF NOT EXISTS ix_request_stats_trace_id ON request_stats(trace_id);
@@ -826,8 +1009,10 @@ CREATE TABLE IF NOT EXISTS request_stats (
     prompt_price DOUBLE PRECISION DEFAULT 0,
     completion_price DOUBLE PRECISION DEFAULT 0,
     timing_spans TEXT,
+    usage_details TEXT,
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE request_stats ADD COLUMN IF NOT EXISTS usage_details TEXT;
 CREATE INDEX IF NOT EXISTS ix_request_stats_trace_id ON request_stats(trace_id);
 CREATE INDEX IF NOT EXISTS ix_request_stats_provider ON request_stats(provider);
 CREATE INDEX IF NOT EXISTS ix_request_stats_model ON request_stats(model);

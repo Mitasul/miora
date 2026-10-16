@@ -24,6 +24,10 @@ pub struct AppState {
     pub runtime: GatewayRuntime,
     pub codex_oauth: CodexOAuthManager,
     pub(crate) channel_metrics: crate::observability::metrics::ChannelMetrics,
+    pub(crate) admin: crate::admin::AdminState,
+    pub(crate) plugins: Arc<crate::plugins::PluginRegistry>,
+    pub(crate) request_logs: crate::request_logs::RequestLogs,
+    pub(crate) request_log: Option<crate::request_logs::capture::LogContext>,
 }
 
 impl AppState {
@@ -41,6 +45,8 @@ impl AppState {
             .map_err(|error| format!("build Python backend client: {error}"))?;
         let resource_governor = ResourceGovernor::new();
         let request_spool = SpoolManager::new(resource_governor.clone())?;
+        let request_logs = crate::request_logs::RequestLogs::from_env(!persistence.disabled())
+            .unwrap_or_else(crate::request_logs::RequestLogs::unavailable);
         Ok(Self {
             backend_origin: backend_origin.into(),
             control_token: control_token.into(),
@@ -56,6 +62,10 @@ impl AppState {
             runtime: GatewayRuntime::new(),
             codex_oauth: CodexOAuthManager::new(),
             channel_metrics: crate::observability::metrics::global(),
+            admin: crate::admin::AdminState::from_env()?,
+            plugins: Arc::new(crate::plugins::PluginRegistry::from_env()?),
+            request_logs,
+            request_log: None,
         })
     }
 

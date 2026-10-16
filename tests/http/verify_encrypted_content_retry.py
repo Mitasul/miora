@@ -126,7 +126,7 @@ def verify(binary, hedging):
             "preferences": {"cooldown_period": 0, "oaix_routing_attempt_id": True, "model_timeout": {"default": 0.05},
                 "post_body_parameter_overrides": {"metadata": {"channel": name}}}} for name in ("first", "fallback", "third")]
         config = {"providers": providers, "api_keys": [
-            {"api": "retry", "model": ["first/*", "fallback/*", "third/*"]},
+            {"api": "retry", "role": "admin", "model": ["first/*", "fallback/*", "third/*"]},
             {"api": "no-retry", "model": ["first/*", "fallback/*", "third/*"], "preferences": {"AUTO_RETRY": False}}],
             "preferences": {"hedging": {"enabled": hedging, "max_inflight_attempts": 2}}}
         config_path = root / "api.json"
@@ -148,7 +148,7 @@ def verify(binary, hedging):
             finally: conn.close()
 
         with (root / "log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:

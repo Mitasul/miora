@@ -16,6 +16,88 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+pub(crate) fn caller_credentials(
+    headers: &HeaderMap,
+    providers: Vec<Arc<Provider>>,
+) -> Result<Vec<Arc<Provider>>, RouteResolutionError> {
+    let name = headers
+        .get("x-miora-byok-provider")
+        .and_then(|value| value.to_str().ok());
+    let key = headers
+        .get("x-miora-byok-api-key")
+        .and_then(|value| value.to_str().ok());
+    let invalid = |message: &str| RouteResolutionError {
+        status: StatusCode::BAD_REQUEST,
+        message: message.into(),
+    };
+    let (name, key) = match (name, key) {
+        (None, None) => return Ok(providers),
+        (Some(name), Some(key)) if !name.is_empty() && !key.is_empty() && key.len() <= 8192 => {
+            (name, key)
+        }
+        _ => {
+            return Err(invalid(
+                "BYOK requires x-miora-byok-provider and x-miora-byok-api-key",
+            ))
+        }
+    };
+    let mut selected = Vec::new();
+    for provider in providers
+        .into_iter()
+        .filter(|provider| provider.name.as_ref() == name)
+    {
+        if provider
+            .preferences
+            .get("allow_byok")
+            .and_then(Value::as_bool)
+            != Some(true)
+        {
+            return Err(RouteResolutionError {
+                status: StatusCode::FORBIDDEN,
+                message: "BYOK is not enabled on this channel".into(),
+            });
+        }
+        if !matches!(
+            provider.engine.as_ref(),
+            "gpt" | "openrouter" | "claude" | "gemini" | "azure" | "azure-databricks"
+        ) {
+            return Err(invalid(
+                "BYOK is supported only by API-key based built-in channels",
+            ));
+        }
+        let mut provider = (*provider).clone();
+        provider.credential =
+            crate::config::snapshot::ProviderCredential::CallerSupplied(key.into());
+        selected.push(Arc::new(provider));
+    }
+    if selected.is_empty() {
+        return Err(RouteResolutionError {
+            status: StatusCode::FORBIDDEN,
+            message: "BYOK channel is not available to this API key and model".into(),
+        });
+    }
+    Ok(selected)
+}
+
+pub(crate) fn virtual_target_accepts(provider: &Provider, status: u16) -> bool {
+    provider
+        .preferences
+        .get("__virtual_on_status")
+        .and_then(Value::as_array)
+        .is_none_or(|statuses| {
+            statuses
+                .iter()
+                .any(|value| value.as_u64() == Some(u64::from(status)))
+        })
+}
+
+pub(crate) fn virtual_fallback_on(providers: &[Arc<Provider>], status: u16) -> bool {
+    providers.iter().any(|provider| {
+        provider.preferences.contains_key("__virtual_on_status")
+            && virtual_target_accepts(provider, status)
+    })
+}
+
 impl GatewayRuntime {
     pub async fn models_for_headers(&self, headers: &HeaderMap) -> Result<Vec<String>, u16> {
         self.models_for_endpoint(headers, "all").await
@@ -62,53 +144,14 @@ impl GatewayRuntime {
         let token = extract_api_key(headers).ok_or(403u16)?;
         let snapshot = self.snapshot().await.ok_or(503u16)?;
         let api_key = snapshot.api_keys.get(&token).ok_or(403u16)?;
-        let allowed = |p: &Arc<Provider>| {
-            crate::control::channels::temporary_allowed(p, api_key)
-                && provider_accepts_endpoint(p, endpoint)
-        };
-        let mut models = BTreeSet::new();
-        for rule in api_key.model_rules.iter() {
-            if rule == "all" {
-                for provider in snapshot.providers.iter().filter(|p| allowed(p)) {
-                    models.extend(provider.models.keys().cloned());
-                }
-                continue;
-            }
-            if rule.starts_with('<') && rule.ends_with('>') {
-                let model = rule[1..rule.len() - 1].to_owned();
-                if snapshot
-                    .providers
-                    .iter()
-                    .filter(|p| allowed(p))
-                    .any(|provider| provider.models.contains_key(&model))
-                {
-                    models.insert(model);
-                }
-                continue;
-            }
-            if let Some((provider_name, model_rule)) = rule.split_once('/') {
-                if let Some(provider) = snapshot
-                    .providers_by_name
-                    .get(provider_name)
-                    .filter(|p| allowed(p))
-                {
-                    if model_rule == "*" {
-                        models.extend(provider.models.keys().cloned());
-                    } else if provider.models.contains_key(model_rule) {
-                        models.insert(model_rule.to_owned());
-                    }
-                }
-                continue;
-            }
-            if snapshot
-                .providers
-                .iter()
-                .filter(|p| allowed(p))
-                .any(|provider| provider.models.contains_key(rule))
-            {
-                models.insert(rule.clone());
-            }
-        }
+        let models: BTreeSet<_> = crate::routing::catalog::ordered_entries(&snapshot, api_key)
+            .into_iter()
+            .filter(|(provider, _)| {
+                crate::control::channels::temporary_allowed(provider, api_key)
+                    && provider_accepts_endpoint(provider, endpoint)
+            })
+            .map(|(_, model)| model)
+            .collect();
         Ok(models.into_iter().collect())
     }
 
@@ -133,10 +176,7 @@ impl GatewayRuntime {
                     status: StatusCode::FORBIDDEN,
                     message: "Invalid or missing API Key".into(),
                 })?;
-        Ok(AuthContext {
-            api_key,
-            api_key_count: snapshot.api_keys.len(),
-        })
+        Ok(AuthContext { api_key })
     }
 
     pub(crate) async fn moderation_enabled(
@@ -498,7 +538,16 @@ pub(crate) fn extract_api_key(headers: &HeaderMap) -> Option<String> {
             return Some(token.to_owned());
         }
     }
-    let authorization = headers.get("authorization")?.to_str().ok()?;
+    let Some(authorization) = headers
+        .get("authorization")
+        .and_then(|value| value.to_str().ok())
+    else {
+        return headers
+            .get("x-goog-api-key")
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned);
+    };
     authorization
         .split_once(' ')
         .map(|(_, token)| token.trim())

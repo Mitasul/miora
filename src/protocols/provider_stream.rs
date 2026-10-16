@@ -885,6 +885,9 @@ pub(crate) fn text_output_value(protocol: Protocol, value: &Value) -> bool {
             }
         }
         Protocol::Gemini => value
+            .get("response")
+            .filter(|inner| inner.is_object())
+            .unwrap_or(value)
             .get("candidates")
             .and_then(Value::as_array)
             .is_some_and(|cs| {
@@ -930,6 +933,9 @@ pub(crate) fn semantic_output_value(protocol: Protocol, value: &Value) -> bool {
             }) || value.pointer("/content_block/type").and_then(Value::as_str) == Some("tool_use")
         }
         Protocol::Gemini => value
+            .get("response")
+            .filter(|inner| inner.is_object())
+            .unwrap_or(value)
             .get("candidates")
             .and_then(Value::as_array)
             .is_some_and(|cs| {
@@ -1256,6 +1262,10 @@ impl StreamState {
     }
 
     fn gemini(&mut self, value: &Value) -> Vec<Value> {
+        let value = value
+            .get("response")
+            .filter(|inner| inner.is_object())
+            .unwrap_or(value);
         let mut output = Vec::new();
         for part in value
             .pointer("/candidates/0/content/parts")
@@ -2346,21 +2356,39 @@ impl JsonObjectFramer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     async fn mock_sse_response(body: &'static str) -> reqwest::Response {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
+            // Consume the request before closing the connection. Closing a
+            // Windows socket with unread inbound bytes sends an RST, discarding
+            // this mock response even when the production parser is correct.
+            let mut request = Vec::new();
+            let mut byte = [0_u8; 1];
+            while !request.ends_with(b"\r\n\r\n") {
+                assert!(request.len() < 16 * 1024);
+                socket.read_exact(&mut byte).await.unwrap();
+                request.push(byte[0]);
+            }
             let response = format!(
                 "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
                 body.len(),
                 body
             );
             socket.write_all(response.as_bytes()).await.unwrap();
+            socket.shutdown().await.unwrap();
         });
-        reqwest::get(format!("http://{address}")).await.unwrap()
+        reqwest::Client::builder()
+            .no_proxy()
+            .build()
+            .unwrap()
+            .get(format!("http://{address}"))
+            .send()
+            .await
+            .unwrap()
     }
 
     #[test]

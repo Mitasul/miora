@@ -117,7 +117,7 @@ def verify(binary, hedging):
                             "model_timeout": {"default": 0.05}}}
             for name in ("first", "fallback", "third")],
             "api_keys": [
-                {"api": "retry", "model": ["first/*", "fallback/*", "third/*"]},
+                {"api": "retry", "role": "admin", "model": ["first/*", "fallback/*", "third/*"]},
                 {"api": "no-retry", "model": ["first/*", "fallback/*", "third/*"],
                  "preferences": {"AUTO_RETRY": False}}],
             "preferences": {"hedging": {"enabled": hedging, "max_inflight_attempts": 2}}}
@@ -148,7 +148,7 @@ def verify(binary, hedging):
                 conn.close()
 
         with (root / "log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:
@@ -159,6 +159,9 @@ def verify(binary, hedging):
                     time.sleep(0.05)
                 else:
                     raise AssertionError("fixture startup failed")
+                # Ordinary inference keys must still fail closed on diagnostic routing.
+                status, raw = request({"model": "test-model", "input": "fixture", "stream": False}, key="no-retry", target=True)
+                assert status == 403 and not server.hits, (status, raw, server.hits)
                 count, expected_repairs = 0, 0
                 for stream in (False, True):
                     cases = ["repair", "wrapped", "tokensfather", "oaix-json", "oaix-sse", "wrapped-oaix-sse",

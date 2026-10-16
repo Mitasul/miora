@@ -8,7 +8,7 @@ with tempfile.TemporaryDirectory(prefix='reveal-qa-')as tmp:
  env={k:v for k,v in os.environ.items()if not k.startswith(('FACTS_S3_','UNI_API_CONTROL_RESTORE'))}
  env.update(PORT=str(port),DISABLE_DATABASE='true',UNI_API_CONFIG_PATH=str(root/'api.json'),RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root/'snapshot.json'),UNI_API_SHARED_MEMORY_RESERVATION_PATH=str(root/'ledger'),NO_PROXY='127.0.0.1,localhost')
  with (root/'log').open('w')as log:
-  p=subprocess.Popen([str(binary)],cwd=root,env=env,stdout=log,stderr=log)
+  p=subprocess.Popen([str(binary)],cwd=root,env=env,stdout=log,stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
   def get(path,key='admin-token'):
    c=http.client.HTTPConnection('127.0.0.1',port,timeout=5);c.request('GET',path,headers={'Authorization':'Bearer '+key});r=c.getresponse();body=r.read();headers=dict(r.getheaders());c.close();return r.status,headers,json.loads(body)
   try:

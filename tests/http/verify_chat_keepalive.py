@@ -105,14 +105,14 @@ def verify(binary, kind, scenario, keepalive=KEEPALIVE, all_fail=False, global_i
         }
         (root/'api.json').write_text(json.dumps(config))
         port = free_port()
-        env = {k: v for k, v in os.environ.items() if k in ['PATH', 'HOME', 'TMPDIR', 'LANG', 'SSL_CERT_FILE']}
+        env = {k: v for k, v in os.environ.items() if k.upper() in ['PATH', 'HOME', 'TMPDIR', 'LANG', 'SSL_CERT_FILE', 'SYSTEMROOT', 'WINDIR', 'TEMP', 'TMP', 'COMSPEC']}
         env.update(PORT=str(port), DISABLE_DATABASE='true', UNI_API_CONFIG_PATH=str(root/'api.json'),
                    RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root/'snapshot.json'),
                    UNI_API_SHARED_MEMORY_RESERVATION_PATH=str(root/'ledger'),
                    RUST_REQUEST_SPOOL_DIRECTORY=str(root/'spool'), NO_PROXY='127.0.0.1,localhost',
                    RUST_REQUEST_SPOOL_DISK_RESERVE_BPS='0', RUST_REQUEST_SPOOL_INODE_RESERVE_BPS='0')
         with (root/'log').open('w+') as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(100):
                     try:

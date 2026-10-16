@@ -6,6 +6,29 @@ pub(crate) fn provider_accepts_endpoint(provider: &Provider, endpoint: &str) -> 
     if endpoint == "all" {
         return true;
     }
+    if provider
+        .preferences
+        .get("protocol_mode")
+        .and_then(Value::as_str)
+        == Some("native")
+    {
+        let engine = provider.engine.trim().to_ascii_lowercase();
+        let accepts = match engine.as_str() {
+            "codex" => matches!(endpoint, "/v1/responses" | "/v1/responses/compact"),
+            "claude" => endpoint == "/v1/messages",
+            "gemini" | "vertex" | "vertex-gemini" => {
+                crate::protocols::dialects::gemini_route(endpoint).is_some()
+            }
+            "gpt" | "openrouter" => {
+                !matches!(endpoint, "/v1/messages")
+                    && crate::protocols::dialects::gemini_route(endpoint).is_none()
+            }
+            _ => false,
+        };
+        if !accepts {
+            return false;
+        }
+    }
     let typesafe = provider.engine.trim().eq_ignore_ascii_case("typesafe");
     typesafe == (endpoint == "/v1/systemone")
 }

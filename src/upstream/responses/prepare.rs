@@ -57,43 +57,41 @@ pub(crate) fn emit_native_rejection(status: u16, observation: NativeRejectionObs
         "snapshot_revision": observation.snapshot_revision,
         "rust_responses_data_plane": true,
     });
-    eprintln!(
-        "{}",
-        json!({
-            "kind": "log",
-            "fugue_table": "request_facts",
-            "event": "request_summary",
-            "event_type": "request_summary",
-            "severity": event_severity(status, "native_rejection"),
-            "source": "uni-api-ember",
-            "message": "uni-api-ember native Responses request rejected",
-            "request_id": observation.request_id,
-            "trace_id": observation.request_id,
-            "path": "/v1/responses",
-            "path_template": "/v1/responses",
-            "route": "POST /v1/responses",
-            "route_id": "POST /v1/responses",
-            "method": "POST",
-            "model": observation.request_model,
-            "role": observation.role,
-            "status_code": status,
-            "status_class": status_class(status),
-            "duration_ms": 0,
-            "upstream_ms": 0,
-            "bytes_in": observation.request_body_bytes,
-            "bytes_out": 0,
-            "streaming": observation.stream,
-            "error_type": observation.reason,
-            "status_origin": status_origin,
-            "summary_json": summary.to_string(),
-            "rust_responses_data_plane": true,
-        })
-    );
+    crate::observability::backend_logs::event(json!({
+        "kind": "log",
+        "fugue_table": "request_facts",
+        "event": "request_summary",
+        "event_type": "request_summary",
+        "severity": event_severity(status, "native_rejection"),
+        "source": "uni-api-ember",
+        "message": "uni-api-ember native Responses request rejected",
+        "request_id": observation.request_id,
+        "trace_id": observation.request_id,
+        "path": "/v1/responses",
+        "path_template": "/v1/responses",
+        "route": "POST /v1/responses",
+        "route_id": "POST /v1/responses",
+        "method": "POST",
+        "model": observation.request_model,
+        "role": observation.role,
+        "status_code": status,
+        "status_class": status_class(status),
+        "duration_ms": 0,
+        "upstream_ms": 0,
+        "bytes_in": observation.request_body_bytes,
+        "bytes_out": 0,
+        "streaming": observation.stream,
+        "error_type": observation.reason,
+        "status_origin": status_origin,
+        "summary_json": summary.to_string(),
+        "rust_responses_data_plane": true,
+    }));
 }
 
 #[allow(clippy::too_many_arguments)]
 pub async fn prepare_request(
     store: &GatewayRuntime,
+    plugins: std::sync::Arc<crate::plugins::PluginRegistry>,
     codex_oauth: CodexOAuthManager,
     persistence: Persistence,
     parts: &Parts,
@@ -311,6 +309,15 @@ pub async fn prepare_request(
         }
         Err(()) => return ResponsesPreparation::Fallback,
     };
+    let providers = match crate::routing::access::caller_credentials(&parts.headers, providers) {
+        Ok(providers) => providers,
+        Err(error) => {
+            return ResponsesPreparation::Response(json_response(
+                error.status,
+                json!({"error":{"message":error.message}}),
+            ))
+        }
+    };
     let providers = store
         .schedule_providers(&api_key, &request_model, providers)
         .await;
@@ -321,9 +328,16 @@ pub async fn prepare_request(
         ));
     }
     if providers.iter().any(|provider| {
-        !matches!(provider.engine.as_ref(), "gpt" | "codex")
-            || provider.api_keys.is_empty()
-            || (provider.engine.as_ref() == "gpt" && !provider.base_url.contains("v1/responses"))
+        !plugins.native_responses_allowed(provider)
+            || (provider.api_keys.is_empty()
+                && matches!(
+                    provider.credential,
+                    crate::config::snapshot::ProviderCredential::Pooled
+                ))
+            || !crate::providers::parameters::native_responses_candidate(
+                provider,
+                normalized_endpoint,
+            )
             || provider_stream_override(provider).is_some_and(|value| value != stream)
     }) {
         return ResponsesPreparation::Fallback;
@@ -388,9 +402,13 @@ pub async fn prepare_request(
         ));
     }
     let targeted = parts.headers.contains_key(TARGET_PROVIDER_HEADER);
+    let virtual_route = providers
+        .iter()
+        .any(|provider| provider.preferences.contains_key("__virtual_alias"));
     let retry_policy = RetryPolicy::from_value(api_key.preferences.get("AUTO_RETRY"));
     let max_attempts = retry_policy.max_attempts(&providers, targeted);
     ResponsesPreparation::Ready(ResponsesRoute {
+        plugins,
         store: store.clone(),
         codex_oauth,
         persistence,
@@ -408,7 +426,7 @@ pub async fn prepare_request(
         request_body_bytes: observation.body_bytes,
         cursor: 0,
         max_attempts,
-        hedging: if targeted || max_attempts == 1 {
+        hedging: if targeted || virtual_route || max_attempts == 1 {
             HedgingConfig::default()
         } else {
             parse_hedging(&snapshot.preferences)

@@ -21,9 +21,13 @@ pub(crate) enum ResponseAdapter {
 pub(crate) enum DownstreamProtocol {
     Native,
     ResponsesCompat,
+    MessagesCompat,
+    GeminiCompat,
 }
 
 pub(crate) struct PreparedAttempt {
+    pub(crate) policy_report: crate::providers::parameters::PolicyReport,
+    pub(crate) plugin_lease: Option<crate::plugins::PluginLease>,
     pub(crate) dispatch: Option<crate::observability::timing::AttemptDispatch>,
     pub(crate) method: Method,
     pub(crate) url: String,

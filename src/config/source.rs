@@ -1,9 +1,21 @@
-use crate::config::compiler::compile_snapshot_bytes;
 use crate::config::discovery::compile_snapshot_with_discovery;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+
+// The watcher, browser administration and legacy control API must serialize
+// read/validate/publish transactions. Multi-process writers are not supported.
+static CONFIG_WRITE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+pub(crate) fn file_revision(metadata: &std::fs::Metadata) -> Result<String, String> {
+    let modified = metadata
+        .modified()
+        .map_err(|error| error.to_string())?
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| error.to_string())?;
+    Ok(format!("{}-{}", modified.as_nanos(), metadata.len()))
+}
 
 #[derive(Clone, Debug)]
 pub enum RuntimeConfigSource {
@@ -101,6 +113,11 @@ impl RuntimeConfigPublisher {
     }
 
     pub async fn publish(&self) -> Result<(), String> {
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
+        self.publish_locked().await
+    }
+
+    async fn publish_locked(&self) -> Result<(), String> {
         let raw = self.source.read(&self.client).await?;
         let snapshot = compile_snapshot_with_discovery(
             &raw,
@@ -113,9 +130,55 @@ impl RuntimeConfigPublisher {
     }
 
     pub async fn apply_patch(&self, patch: &Value) -> Result<(), String> {
+        self.apply_patch_inner(patch, None).await
+    }
+
+    pub async fn apply_patch_revision(
+        &self,
+        patch: &Value,
+        expected_revision: &str,
+    ) -> Result<(), String> {
+        self.apply_patch_inner(patch, Some(expected_revision)).await
+    }
+
+    pub(crate) async fn replace_source_revision(
+        &self,
+        raw: &[u8],
+        expected: &str,
+    ) -> Result<(), String> {
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
+        let RuntimeConfigSource::File(path) = &self.source else {
+            return Err("remote configuration is read-only".into());
+        };
+        let metadata = tokio::fs::metadata(path)
+            .await
+            .map_err(|error| error.to_string())?;
+        if file_revision(&metadata)? != expected {
+            return Err("configuration revision conflict".into());
+        }
+        let original = tokio::fs::read(path)
+            .await
+            .map_err(|error| error.to_string())?;
+        self.commit_bytes_locked(path, raw, &original).await
+    }
+
+    async fn apply_patch_inner(
+        &self,
+        patch: &Value,
+        expected_revision: Option<&str>,
+    ) -> Result<(), String> {
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
         let RuntimeConfigSource::File(path) = &self.source else {
             return Err("runtime configuration is read-only when CONFIG_URL is remote".into());
         };
+        if let Some(expected) = expected_revision {
+            let metadata = tokio::fs::metadata(path)
+                .await
+                .map_err(|error| error.to_string())?;
+            if expected != file_revision(&metadata)? {
+                return Err("configuration revision conflict".into());
+            }
+        }
         let raw = tokio::fs::read(path)
             .await
             .map_err(|error| format!("read {} for update: {error}", path.display()))?;
@@ -132,22 +195,59 @@ impl RuntimeConfigPublisher {
         for (key, value) in patch {
             if matches!(
                 key.as_str(),
-                "providers" | "api_keys" | "preferences" | "video"
+                "providers" | "api_keys" | "preferences" | "video" | "virtual_models"
             ) {
                 root.insert(key.clone(), value.clone());
             }
         }
-        compile_snapshot_bytes(
-            serde_yaml::to_string(&config)
-                .map_err(|error| format!("validate configuration update: {error}"))?
-                .as_bytes(),
+        self.commit_config_locked(path, &config, &raw).await
+    }
+
+    // Validate discovery before committing either file. If publishing fails,
+    // restore the source while the watcher is excluded by CONFIG_WRITE_LOCK.
+    async fn commit_config_locked(
+        &self,
+        path: &Path,
+        config: &Value,
+        original: &[u8],
+    ) -> Result<(), String> {
+        let encoded = serde_yaml::to_string(config)
+            .map_err(|error| format!("encode configuration: {error}"))?;
+        self.commit_bytes_locked(path, encoded.as_bytes(), original)
+            .await
+    }
+
+    async fn commit_bytes_locked(
+        &self,
+        path: &Path,
+        encoded: &[u8],
+        original: &[u8],
+    ) -> Result<(), String> {
+        let snapshot = compile_snapshot_with_discovery(
+            encoded,
             self.database_disabled,
-        )?;
-        write_config_file(path, &config).await?;
-        self.publish().await
+            &self.client,
+            &self.discovery_cache,
+        )
+        .await?;
+        let current = tokio::fs::read(path)
+            .await
+            .map_err(|error| format!("verify configuration: {error}"))?;
+        if current != original {
+            return Err("configuration revision conflict".into());
+        }
+        atomic_write(path, encoded).await?;
+        if let Err(error) = atomic_write(self.snapshot_path.as_ref(), &snapshot).await {
+            atomic_write(path, original)
+                .await
+                .map_err(|rollback| format!("{error}; source rollback failed: {rollback}"))?;
+            return Err(error);
+        }
+        Ok(())
     }
 
     pub async fn add_credits(&self, paid_key: &str, amount: f64) -> Result<f64, String> {
+        let _guard = CONFIG_WRITE_LOCK.lock().await;
         if !amount.is_finite() || amount <= 0.0 {
             return Err("amount must be positive".into());
         }
@@ -182,16 +282,16 @@ impl RuntimeConfigPublisher {
             .unwrap_or(0.0);
         let updated = current + amount;
         preferences.insert("credits".into(), json!(updated));
-        write_config_file(path, &config).await?;
-        self.publish().await?;
+        self.commit_config_locked(path, &config, &raw).await?;
         Ok(updated)
     }
 
     pub fn start_watcher(&self) {
         let publisher = self.clone();
         tokio::spawn(async move {
-            let mut last_revision = String::new();
+            let mut last_snapshot = Value::Null;
             loop {
+                let guard = CONFIG_WRITE_LOCK.lock().await;
                 let snapshot = match publisher.source.read(&publisher.client).await {
                     Ok(raw) => {
                         compile_snapshot_with_discovery(
@@ -206,59 +306,30 @@ impl RuntimeConfigPublisher {
                 };
                 match snapshot {
                     Ok(snapshot) => {
-                        let revision = serde_json::from_slice::<Value>(&snapshot)
-                            .ok()
-                            .and_then(|value| value.get("revision")?.as_str().map(str::to_owned))
-                            .unwrap_or_default();
-                        if revision != last_revision {
+                        let mut content: Value =
+                            serde_json::from_slice(&snapshot).expect("compiled snapshot JSON");
+                        let object = content.as_object_mut().expect("compiled snapshot object");
+                        object.remove("revision");
+                        object.remove("generated_unix_ms");
+                        if content != last_snapshot {
                             match atomic_write(publisher.snapshot_path.as_ref(), &snapshot).await {
-                                Ok(()) => last_revision = revision,
-                                Err(error) => eprintln!(
-                                    "{}",
-                                    json!({
-                                        "event_type": "rust_runtime_config_publish_error",
-                                        "error": error,
-                                    })
-                                ),
+                                Ok(()) => last_snapshot = content,
+                                Err(error) => crate::observability::backend_logs::event(json!({
+                                    "event_type": "rust_runtime_config_publish_error",
+                                    "error": error,
+                                })),
                             }
                         }
                     }
-                    Err(error) => eprintln!(
-                        "{}",
-                        json!({
-                            "event_type": "rust_runtime_config_reload_error",
-                            "error": error,
-                        })
-                    ),
+                    Err(error) => crate::observability::backend_logs::event(json!({
+                        "event_type": "rust_runtime_config_reload_error",
+                        "error": error,
+                    })),
                 }
+                drop(guard);
                 tokio::time::sleep(publisher.source.poll_interval()).await;
             }
         });
-    }
-}
-
-pub(crate) async fn write_config_file(path: &Path, config: &Value) -> Result<(), String> {
-    let encoded = serde_yaml::to_string(config)
-        .map_err(|error| format!("encode updated configuration: {error}"))?;
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = parent.join(format!(
-        ".{}.{}.update",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("api.yaml"),
-        std::process::id(),
-    ));
-    tokio::fs::write(&temporary, encoded.as_bytes())
-        .await
-        .map_err(|error| format!("write temporary configuration: {error}"))?;
-    match tokio::fs::rename(&temporary, path).await {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            let _ = tokio::fs::remove_file(&temporary).await;
-            tokio::fs::write(path, encoded.as_bytes())
-                .await
-                .map_err(|error| format!("write updated configuration {}: {error}", path.display()))
-        }
     }
 }
 

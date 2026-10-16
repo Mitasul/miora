@@ -30,6 +30,11 @@ impl GatewayRuntime {
         provider: &Provider,
         original_model: &str,
     ) -> ProviderKeySelection {
+        if let crate::config::snapshot::ProviderCredential::CallerSupplied(key) =
+            &provider.credential
+        {
+            return ProviderKeySelection::Selected(key.to_string());
+        }
         if provider.api_keys.is_empty()
             && provider.client_email.is_some()
             && provider.private_key.is_some()
@@ -98,6 +103,12 @@ impl GatewayRuntime {
     }
 
     pub(crate) async fn cool_failed_route(&self, failure: FailedRoute<'_>) {
+        if matches!(
+            failure.provider.credential,
+            crate::config::snapshot::ProviderCredential::CallerSupplied(_)
+        ) {
+            return;
+        }
         let FailedRoute {
             provider,
             key,
@@ -108,6 +119,13 @@ impl GatewayRuntime {
             provider_model_unavailable,
             force_quota_cooldown,
         } = failure;
+        *self
+            .scheduling
+            .key_failures
+            .lock()
+            .await
+            .entry((provider.name.to_string(), key.to_owned()))
+            .or_default() += 1;
         if provider_model_unavailable || matches!(status, 403 | 404) {
             let now = tokio::time::Instant::now();
             let route_key = (provider.name.to_string(), original_model.to_owned());
@@ -221,6 +239,12 @@ impl GatewayRuntime {
     }
 
     pub(crate) async fn reset_route_failure(&self, provider: &Provider, original_model: &str) {
+        if matches!(
+            provider.credential,
+            crate::config::snapshot::ProviderCredential::CallerSupplied(_)
+        ) {
+            return;
+        }
         self.scheduling
             .route_failures
             .lock()
@@ -368,6 +392,7 @@ pub(crate) fn parse_rate_limits(
 
 #[derive(Clone, Default)]
 pub(crate) struct SchedulingState {
+    pub(crate) key_failures: Arc<Mutex<HashMap<(String, String), u64>>>,
     pub(crate) provider_cursors: Arc<Mutex<HashMap<String, Arc<AtomicUsize>>>>,
     pub(crate) key_cooldowns: Arc<Mutex<HashMap<(String, String), tokio::time::Instant>>>,
     pub(crate) channel_cooldowns: Arc<Mutex<HashMap<(String, String), tokio::time::Instant>>>,

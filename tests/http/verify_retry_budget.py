@@ -64,7 +64,7 @@ def verify(binary, hedging):
                       "zero": 0, "string-false": "false", "off": " OFF ",
                       "invalid": "invalid", "negative": -1, "fractional": 1.5,
                       "true": True, "string-true": "true", "large": 2**64-1}
-            api_keys = [{"api": name, "model": ["all"],
+            api_keys = [{"api": name, "role": "admin" if name == "three" else "user", "model": ["all"],
                          "preferences": {"AUTO_RETRY": value}} for name, value in values.items()]
             api_keys.append({"api": "default", "model": ["all"]})
             config = {
@@ -78,7 +78,7 @@ def verify(binary, hedging):
             config_path = root / "api.json"
             original = json.dumps(config).encode()
             config_path.write_bytes(original)
-            env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "TMPDIR", "LANG")}
+            env = {k: v for k, v in os.environ.items() if k.upper() in ("PATH", "HOME", "TMPDIR", "LANG", "SYSTEMROOT", "WINDIR", "TEMP", "TMP", "COMSPEC")}
             env.update(PORT=str(port), DISABLE_DATABASE="true", NO_PROXY="127.0.0.1,localhost",
                        UNI_API_CONFIG_PATH=str(config_path),
                        RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root / "snapshot.json"),
@@ -130,7 +130,7 @@ def verify(binary, hedging):
                 return 1
 
             with (root / "log").open("w+") as log:
-                process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+                process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
                 try:
                     for _ in range(150):
                         try:

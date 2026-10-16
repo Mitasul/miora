@@ -49,7 +49,6 @@ pub(crate) fn record_log(log: &Value) {
         "semantic_status_code",
         "skip_reason",
         "status_origin",
-        "error_sha256",
         "duration_ms",
         "body_bytes",
         "resource_wait_ms",
@@ -71,7 +70,7 @@ pub(crate) fn record_log(log: &Value) {
 
 pub(crate) fn log(event: Value) {
     record_log(&event);
-    eprintln!("{event}");
+    crate::observability::backend_logs::event(event);
 }
 
 fn emit(mut value: Value) {

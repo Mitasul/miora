@@ -1,0 +1,20 @@
+{
+  "id": "echo",
+  "name": "Local Echo Channel",
+  "version": "1.0.0",
+  "api_version": 1,
+  "description": "Independent stdlib HTTP/SSE channel plugin; no external API or paid account.",
+  "config_schema": [
+    {"key": "prefix", "label": "Reply prefix", "type": "string", "default": "Echo", "required": false, "secret": false},
+    {"key": "delay_ms", "label": "Delay between SSE events (0-3000 ms)", "type": "integer", "default": 30, "required": false, "secret": false},
+    {"key": "fail_status", "label": "Simulated failure for retry tests", "type": "integer", "default": 0, "enum": [0, 429, 500, 503], "required": false, "secret": false},
+    {"key": "credential", "label": "Optional demo channel secret (never echoed)", "type": "string", "required": false, "secret": true}
+  ],
+  "auth": {"type": "none"},
+  "capabilities": {
+    "endpoints": ["/v1/chat/completions", "/v1/responses", "/v1/embeddings"],
+    "streaming": true,
+    "model_discovery": true
+  },
+  "models": [{"id": "echo-model", "name": "Echo Model"}]
+}

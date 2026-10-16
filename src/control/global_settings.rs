@@ -35,6 +35,12 @@ pub(crate) fn default_value(key: &str) -> Option<Value> {
         _ => return None,
     })
 }
+pub(crate) fn resolved_fields(document: &Value) -> Value {
+    Value::Object(KEYS.iter().map(|key| {
+        let configured = document["preferences"].get(*key);
+        (format!("/preferences/{key}"), json!({"value":configured.cloned().or_else(||default_value(key)),"inherited_value":default_value(key),"inherited_source":"default","source":if configured.is_some(){"global"}else{"default"},"can_inherit":true,"note":note(key)}))
+    }).collect())
+}
 pub(crate) fn validate(raw: &Value) -> Result<(), String> {
     let p = raw
         .get("preferences")

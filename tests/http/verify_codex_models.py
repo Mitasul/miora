@@ -60,7 +60,7 @@ def verify(binary):
                 provider("systemone", ["jev-latest"], engine="typesafe"),
             ],
             "api_keys": [
-                {"api": "admin-fixture", "model": ["all"]},
+                {"api": "admin-fixture", "role": "admin", "model": ["all"]},
                 {"api": "business-fixture", "model": ["primary/*", "fallback/*", "blocked/*", "systemone/*"]},
                 {"api": "restricted-fixture", "model": ["primary/gpt-6-sol"]},
                 {"api": "nested-fixture", "model": ["restricted-fixture/*"]},
@@ -100,7 +100,7 @@ def verify(binary):
             return {model["slug"] for model in json.loads(body)["models"]}
 
         with (root / "gateway.log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(160):
                     try:

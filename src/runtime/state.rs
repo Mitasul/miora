@@ -45,13 +45,10 @@ impl GatewayRuntime {
         tokio::spawn(async move {
             loop {
                 if let Err(error) = store.refresh().await {
-                    eprintln!(
-                        "{}",
-                        json!({
-                            "event_type": "rust_responses_config_snapshot_error",
-                            "error": error,
-                        })
-                    );
+                    crate::observability::backend_logs::event(json!({
+                        "event_type": "rust_responses_config_snapshot_error",
+                        "error": error,
+                    }));
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -90,7 +87,7 @@ impl GatewayRuntime {
                 raw.schema_version
             ));
         }
-        if raw.revision.len() != 64 {
+        if raw.revision.is_empty() {
             return Err("native Responses snapshot revision is invalid".into());
         }
         *self.snapshot_stamp.lock().await = Some(stamp);
@@ -156,6 +153,10 @@ impl GatewayRuntime {
             })
             .collect::<HashMap<_, _>>();
         let snapshot = Arc::new(Snapshot {
+            virtual_models: Arc::new(crate::config::virtual_models::runtime(
+                &raw.preferences,
+                &providers_by_name,
+            )),
             revision: raw.revision.into(),
             preferences: Arc::new(raw.preferences),
             api_keys: Arc::new(api_keys),
@@ -165,15 +166,12 @@ impl GatewayRuntime {
             api_config: Arc::new(raw.api_config),
         });
         *self.current.write().await = Some(snapshot.clone());
-        eprintln!(
-            "{}",
-            json!({
-                "event_type": "rust_responses_config_snapshot_loaded",
-                "revision": snapshot.revision.as_ref(),
-                "api_key_count": snapshot.api_keys.len(),
-                "provider_count": snapshot.providers.len(),
-            })
-        );
+        crate::observability::backend_logs::event(json!({
+            "event_type": "rust_responses_config_snapshot_loaded",
+            "revision": snapshot.revision.as_ref(),
+            "api_key_count": snapshot.api_keys.len(),
+            "provider_count": snapshot.providers.len(),
+        }));
         Ok(true)
     }
 

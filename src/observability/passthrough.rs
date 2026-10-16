@@ -132,6 +132,7 @@ impl Observer {
         self.usage.merge(FactUsage::from_usage(
             value
                 .get("usage")
+                .or_else(|| value.get("usageMetadata"))
                 .or_else(|| value.pointer("/message/usage"))
                 .or_else(|| value.pointer("/response/usage")),
         ));
@@ -142,9 +143,14 @@ impl Observer {
         }
         use crate::protocols::provider_stream::{text_output_value, Protocol};
         if self.first_text_ms.is_none()
-            && [Protocol::Responses, Protocol::Claude, Protocol::Chat]
-                .iter()
-                .any(|p| text_output_value(*p, &value))
+            && [
+                Protocol::Responses,
+                Protocol::Claude,
+                Protocol::Chat,
+                Protocol::Gemini,
+            ]
+            .iter()
+            .any(|p| text_output_value(*p, &value))
         {
             self.first_text_ms = Some(elapsed);
         }
@@ -160,9 +166,10 @@ impl Observer {
         if matches!(
             kind,
             "message_stop" | "response.completed" | "response.incomplete"
-        ) || value
-            .pointer("/choices/0/finish_reason")
-            .is_some_and(|v| !v.is_null())
+        ) || value.pointer("/candidates/0/finishReason").is_some()
+            || value
+                .pointer("/choices/0/finish_reason")
+                .is_some_and(|v| !v.is_null())
         {
             self.terminal = true;
         }
@@ -190,6 +197,8 @@ impl Observer {
                 .get("delta")
                 .and_then(Value::as_str)
                 .is_some_and(|v| !v.is_empty()));
+        let semantic = semantic
+            || crate::protocols::provider_stream::semantic_output_value(Protocol::Gemini, &value);
         if (semantic || self.first_text_ms.is_some()) && self.first_output_ms.is_none() {
             self.first_output_ms = Some(self.start.elapsed().as_secs_f64() * 1000.0);
         }

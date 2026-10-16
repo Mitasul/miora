@@ -3,7 +3,6 @@
 use crate::config::snapshot::Provider;
 use futures_util::{stream, FutureExt, StreamExt};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -20,9 +19,10 @@ const MAX_KEYS: usize = 8;
 const MAX_BODY: usize = 262_144;
 
 type Slot = Arc<Mutex<Option<(Instant, Value)>>>;
+type CacheKey = (String, String, Option<String>, Option<String>);
 
 struct Balances {
-    cache: Mutex<HashMap<String, Slot>>,
+    cache: Mutex<HashMap<CacheKey, Slot>>,
     permits: Semaphore,
 }
 
@@ -203,9 +203,12 @@ impl Balances {
         proxy: Option<&str>,
         model: Option<&str>,
     ) -> Value {
-        let identity =
-            serde_json::to_vec(&(url.as_str(), credential, proxy, model)).unwrap_or_default();
-        let id = format!("{:x}", Sha256::digest(identity));
+        let id = (
+            url.as_str().to_owned(),
+            credential.to_owned(),
+            proxy.map(str::to_owned),
+            model.map(str::to_owned),
+        );
         let slot = {
             let mut cache = self.cache.lock().await;
             if !cache.contains_key(&id) && cache.len() >= MAX_CACHE {

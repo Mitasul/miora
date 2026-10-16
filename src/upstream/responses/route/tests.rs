@@ -28,8 +28,6 @@ use crate::storage::database::Persistence;
 use crate::upstream::hedging::parse_hedging;
 use crate::upstream::hedging::HedgingConfig;
 use crate::upstream::responses::route::compile_payload;
-use crate::upstream::responses::route::sha256_hex;
-use crate::upstream::responses::route::terminal_error_sha256;
 use crate::upstream::responses::route::ResponsesRoute;
 use axum::http::{HeaderMap, HeaderValue, StatusCode};
 use serde_json::{json, Map, Value};
@@ -39,6 +37,7 @@ use std::sync::Arc;
 
 fn provider() -> Provider {
     Provider {
+        credential: crate::config::snapshot::ProviderCredential::Pooled,
         engine_mode: "explicit".into(),
         name: Arc::from("fugue-codex"),
         base_url: Arc::from("https://example.com/v1/responses"),
@@ -77,6 +76,7 @@ fn named_provider(name: &str) -> Arc<Provider> {
 async fn native_route_for_test(provider: Arc<Provider>, max_attempts: usize) -> ResponsesRoute {
     let store = GatewayRuntime::new();
     let snapshot = Arc::new(Snapshot {
+        virtual_models: Arc::new(std::collections::HashMap::new()),
         revision: Arc::from("0".repeat(64)),
         preferences: Arc::new(Map::new()),
         api_keys: Arc::new(HashMap::new()),
@@ -101,6 +101,16 @@ async fn native_route_for_test(provider: Arc<Provider>, max_attempts: usize) -> 
         .await
         .unwrap();
     ResponsesRoute {
+        plugins: Arc::new(
+            crate::plugins::PluginRegistry::open(
+                None,
+                crate::plugins::registry::TrustPolicy {
+                    allowed_origins: vec![],
+                    allow_loopback_http: false,
+                },
+            )
+            .unwrap(),
+        ),
         store,
         codex_oauth: CodexOAuthManager::new(),
         persistence: Persistence::initialize(true).await.unwrap(),
@@ -149,6 +159,42 @@ async fn native_route_for_test(provider: Arc<Provider>, max_attempts: usize) -> 
     }
 }
 
+#[tokio::test]
+async fn gateway_features_native_byok_replaces_every_auth_header_case() {
+    let mut provider = provider();
+    provider.engine = Arc::from("gpt");
+    provider.credential =
+        crate::config::snapshot::ProviderCredential::CallerSupplied("caller-key".into());
+    provider.preferences = Arc::new(
+        serde_json::from_value(
+            json!({"headers":{"Authorization":"Bearer shared-override","X-Api-Key":"shared-key"}}),
+        )
+        .unwrap(),
+    );
+    let mut route = native_route_for_test(Arc::new(provider), 1).await;
+    let plan = route.next_plan().await.unwrap().unwrap();
+    let auth = plan
+        .headers
+        .iter()
+        .filter(|(name, _)| {
+            ["authorization", "x-api-key", "api-key", "x-goog-api-key"]
+                .iter()
+                .any(|auth| name.eq_ignore_ascii_case(auth))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(auth.len(), 1);
+    assert_eq!(auth[0].1, "Bearer caller-key");
+    assert!(route.store.scheduling.key_cooldowns.lock().await.is_empty());
+    assert!(route
+        .store
+        .scheduling
+        .provider_windows
+        .lock()
+        .await
+        .is_empty());
+    assert_eq!(route.providers[0].cursor.load(Ordering::Relaxed), 0);
+}
+
 async fn catalog_fixture() -> GatewayRuntime {
     let store = GatewayRuntime::new();
     let mut providers = Vec::new();
@@ -167,7 +213,7 @@ async fn catalog_fixture() -> GatewayRuntime {
     }
     let mut keys = HashMap::new();
     for (token, role, rules) in [
-        ("dashboard-first", "user", vec!["z-first/shared"]),
+        ("dashboard-first", "admin", vec!["z-first/shared"]),
         (
             "restricted",
             "user",
@@ -194,6 +240,7 @@ async fn catalog_fixture() -> GatewayRuntime {
         );
     }
     *store.current.write().await = Some(Arc::new(Snapshot {
+        virtual_models: Arc::new(std::collections::HashMap::new()),
         revision: "0".repeat(64).into(),
         preferences: Arc::new(Map::new()),
         api_keys: Arc::new(keys),
@@ -1237,6 +1284,7 @@ fn hedging_preferences_parse_with_safe_defaults() {
 fn nonstream_total_policy_replaces_only_the_implicit_first_byte_fallback() {
     let mut provider = provider();
     let mut snapshot = Snapshot {
+        virtual_models: Arc::new(std::collections::HashMap::new()),
         revision: Arc::from("0".repeat(64)),
         preferences: Arc::new(Map::from_iter([("model_timeout".into(), json!(20))])),
         api_keys: Arc::new(HashMap::new()),
@@ -1308,6 +1356,7 @@ fn nonstream_total_policy_replaces_only_the_implicit_first_byte_fallback() {
 fn timeout_policy_matches_compaction_request_type_without_affecting_regular_requests() {
     let provider = provider();
     let snapshot = Snapshot {
+        virtual_models: Arc::new(std::collections::HashMap::new()),
         revision: Arc::from("0".repeat(64)),
         preferences: Arc::new(Map::from_iter([
             ("model_timeout".into(), json!({"gpt-public": 20})),
@@ -1440,6 +1489,7 @@ fn model_timeout_matches_legacy_fuzzy_and_fallback_order() {
 
     let resolved = resolve_timeouts(
         &Snapshot {
+            virtual_models: Arc::new(std::collections::HashMap::new()),
             revision: Arc::from("0".repeat(64)),
             preferences: Arc::new(global),
             api_keys: Arc::new(HashMap::new()),
@@ -1654,8 +1704,6 @@ fn provider_error_policy_matches_request_scoped_and_gateway_failures() {
         retry_after_seconds("Rate limit reached. Please try again in 2500ms."),
         Some(3.0)
     );
-    assert_eq!(terminal_error_sha256(true, "earlier attempt failed"), None);
-    assert!(terminal_error_sha256(false, "terminal failure").is_some());
 }
 
 #[test]
@@ -1891,10 +1939,7 @@ async fn short_input_semantic_rejection_preserves_wire_status_and_retries_next_c
     );
     assert_eq!(route.last_status(), 502);
     assert_eq!(route.upstream_ledger[0]["status_code"], 200);
-    assert_eq!(
-        route.upstream_ledger[0]["error_sha256"],
-        sha256_hex(message)
-    );
+    assert!(route.upstream_ledger[0].get("error_sha256").is_none());
     assert_eq!(route.routing_ledger[0]["status_code"], 502);
     let fallback = route.next_plan().await.unwrap().unwrap();
     assert_eq!(fallback.provider_name.as_deref(), Some("fallback"));
@@ -1920,7 +1965,7 @@ async fn generic_upstream_error_retries_and_cools_the_failed_channel() {
     );
     assert_eq!(route.last_status(), 502);
     assert_eq!(route.upstream_ledger[0]["status_code"], 400);
-    assert_eq!(route.upstream_ledger[0]["error_sha256"], sha256_hex(body));
+    assert!(route.upstream_ledger[0].get("error_sha256").is_none());
     assert_eq!(route.routing_ledger[0]["status_code"], 502);
     let fallback = route.next_plan().await.unwrap().unwrap();
     assert_eq!(fallback.provider_name.as_deref(), Some("fallback"));
@@ -2029,10 +2074,6 @@ fn model_mismatch_error(model: &str) -> Value {
 #[test]
 fn mismatched_model_validation_is_a_retryable_gateway_error() {
     let body = model_mismatch_error("gpt-5.5").to_string();
-    assert_eq!(
-        sha256_hex(&body),
-        "a64a8cb7fea16f8b54289a847e80ad3c7ef1b2f85626af3ad7cbc75e215ca03f"
-    );
     for detail in [
         body.clone(),
         json!({"error": {"message": body}}).to_string(),

@@ -52,6 +52,7 @@ def main() -> int:
             [sys.executable, str(script), str(binary)],
             cwd=root,
             start_new_session=os.name == "posix",
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         try:
             if process.wait(timeout=args.timeout):

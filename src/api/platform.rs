@@ -127,6 +127,22 @@ pub async fn handle(
             })
         }
         (&Method::GET, "/v1/models") => Some(models_response(state, uri, headers).await),
+        (&Method::GET, "/v1beta/models") => Some(
+            match state
+                .runtime
+                .models_for_endpoint(headers, "/v1beta/models/discovery:generateContent")
+                .await
+            {
+                Ok(models) => json_response(
+                    StatusCode::OK,
+                    json!({"models":models.into_iter().map(|model| json!({"name":format!("models/{model}"),"displayName":model,"supportedGenerationMethods":["generateContent","streamGenerateContent"]})).collect::<Vec<_>>()}),
+                ),
+                Err(status) => json_error(
+                    StatusCode::from_u16(status).unwrap_or(StatusCode::FORBIDDEN),
+                    "Model discovery is unavailable to this API key",
+                ),
+            },
+        ),
         (&Method::GET, "/v1/codex/models") => Some(codex_models_response(state, headers).await),
         (&Method::GET, "/v1/model-channels") => {
             Some(model_channels_response(state, uri, headers).await)
@@ -192,7 +208,7 @@ pub async fn handle(
             "text/html; charset=utf-8",
             r#"<!doctype html><meta charset="utf-8"><title>uni-api</title><script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script><link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css"><div id="swagger"></div><script>SwaggerUIBundle({url:'/openapi.json',dom_id:'#swagger'})</script>"#,
         )),
-        (&Method::GET, "/") => Some(redirect_response("https://uni-api-web.pages.dev")),
+        (&Method::GET, "/") => Some(redirect_response("/login")),
         _ => None,
     };
     if let Some(response) = response.as_mut() {
@@ -685,8 +701,7 @@ async fn token_usage_response(state: &AppState, uri: &Uri, headers: &HeaderMap) 
         Ok(auth) => auth,
         Err(error) => return json_error(error.status, &error.message),
     };
-    let is_admin =
-        auth.api_key.role.to_ascii_lowercase().contains("admin") || auth.api_key_count == 1;
+    let is_admin = auth.api_key.role.eq_ignore_ascii_case("admin");
     let requested_key = query_value(uri, "api_key_param");
     let filter_key = if is_admin {
         requested_key.as_deref()
@@ -757,7 +772,7 @@ async fn require_admin(state: &AppState, headers: &HeaderMap) -> Result<(), Resp
         .authorize(headers)
         .await
         .map_err(|error| json_error(error.status, &error.message))?;
-    if auth.api_key_count > 1 && !auth.api_key.role.to_ascii_lowercase().contains("admin") {
+    if !auth.api_key.role.eq_ignore_ascii_case("admin") {
         return Err(json_error(StatusCode::FORBIDDEN, "Permission denied"));
     }
     Ok(())
@@ -904,18 +919,10 @@ fn insert_request_id(output: &mut HeaderMap, input: &HeaderMap) {
 }
 
 fn generate_api_key() -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(std::process::id().to_le_bytes());
-    hasher.update(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos()
-            .to_le_bytes(),
-    );
-    let digest = format!("{:x}", hasher.finalize());
-    format!("sk-{}", &digest[..48])
+    use ring::rand::{SecureRandom, SystemRandom};
+    let mut bytes = [0u8; 24];
+    let _ = SystemRandom::new().fill(&mut bytes);
+    format!("sk-{}", hex::encode(bytes))
 }
 
 fn unix_seconds() -> i64 {

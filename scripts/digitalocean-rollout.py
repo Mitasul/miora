@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import os
 import subprocess
 
 
@@ -20,7 +21,6 @@ from __future__ import annotations
 import argparse
 import fcntl
 import os
-import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -125,8 +125,6 @@ def intent(state):
     channels = sorted(state.get("temporary_channels") or [], key=lambda item: json.dumps(item, sort_keys=True))
     return {
         "config_revision": state.get("config_revision"),
-        "channel_definitions_digest": state.get("channel_definitions_digest"),
-        "channel_settings_digest": state.get("channel_settings_digest"),
         "rules": rules,
         "temporary_channels": channels,
     }
@@ -139,10 +137,8 @@ def control_summary(port, *, require_bootstrap=False):
     if require_bootstrap and not state.get("bootstrap_restore"):
         raise RolloutError(f"port {port} has no bootstrap_restore receipt")
     public_intent = intent(state)
-    encoded = json.dumps(public_intent, sort_keys=True, separators=(",", ":")).encode()
     return {
         "intent": public_intent,
-        "state_hash": hashlib.sha256(encoded).hexdigest(),
         "channels": len(public_intent["temporary_channels"]),
         "rules": len(public_intent["rules"]),
         "bootstrap_restore": bool(state.get("bootstrap_restore")),
@@ -396,7 +392,6 @@ def final_report(image):
                 "primary_restart_count": primary.get("RestartCount"),
                 "channels": summary["channels"],
                 "rules": summary["rules"],
-                "control_state_hash": summary["state_hash"],
                 "candidate_status": candidate["State"]["Status"] if candidate else "removed",
                 "candidate_exit_code": candidate["State"].get("ExitCode") if candidate else 0,
             },
@@ -426,7 +421,6 @@ def check_only(image_ref, expected_commit=""):
                 "source_commit": env_map(primary).get("SOURCE_COMMIT"),
                 "channels": summary["channels"],
                 "rules": summary["rules"],
-                "control_state_hash": summary["state_hash"],
                 "bootstrap_restore": summary["bootstrap_restore"],
             },
             sort_keys=True,
@@ -457,21 +451,7 @@ def retained_equal(port):
                 for row in value.get("temporary_channels", [])
             ], key=lambda row: row["provider"]),
         }
-    def digest(value):
-        # Match control/settings.rs, which canonicalizes integral JSON floats.
-        def normalize(item):
-            if isinstance(item, dict):
-                return {key: normalize(child) for key, child in item.items()}
-            if isinstance(item, list):
-                return [normalize(child) for child in item]
-            if isinstance(item, float) and item.is_integer() and abs(item) < 9007199254740992:
-                return int(item)
-            return item
-        return hashlib.sha256(json.dumps(normalize(value), sort_keys=True, ensure_ascii=False, separators=(",", ":")).encode()).hexdigest()
-    definitions = {row["provider"]: row["definition"] for row in saved.get("temporary_channels", []) if row.get("definition")}
-    if (routing(saved) != routing(live)
-        or digest(saved.get("channel_settings", {})) != live.get("channel_settings_digest")
-        or digest(definitions) != live.get("channel_definitions_digest")):
+    if routing(saved) != routing(live):
         raise RolloutError("console saved intent differs; preserve the serving instance")
     print(f"retained_equal_port={port}", flush=True)
 
@@ -480,10 +460,7 @@ def rollout(args):
     # This lock serializes invocations of this script, including long drains.
     primary = inspect(PRIMARY)
     service = compose_metadata(args.image)
-    baseline = {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in (COMPOSE, CONFIG)}
     def unchanged():
-        if any(hashlib.sha256(p.read_bytes()).hexdigest() != value for p, value in baseline.items()):
-            raise RolloutError("base config or Compose changed during rollout")
         if compose_metadata(args.image) != service:
             raise RolloutError("effective Compose configuration changed during rollout")
         if image_info(args.image)["id"] != image["id"]:
@@ -606,7 +583,7 @@ def main() -> int:
     for option in args.ssh_option + ["BatchMode=yes", "ConnectTimeout=15", "ServerAliveInterval=15", "ServerAliveCountMax=3"]:
         command += ["-o", option]
     command += [args.remote, shlex.join(remote_command)]
-    result = subprocess.run(command, input=REMOTE_SCRIPT, text=True, check=False)
+    result = subprocess.run(command, input=REMOTE_SCRIPT, text=True, check=False, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     return result.returncode
 
 

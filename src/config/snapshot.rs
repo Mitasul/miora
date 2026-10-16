@@ -79,6 +79,7 @@ pub(crate) struct Snapshot {
     pub(crate) api_key_order: Arc<Vec<String>>,
     pub(crate) providers: Arc<Vec<Arc<Provider>>>,
     pub(crate) providers_by_name: Arc<HashMap<String, Arc<Provider>>>,
+    pub(crate) virtual_models: Arc<HashMap<String, Vec<Arc<Provider>>>>,
     pub(crate) api_config: Arc<Value>,
 }
 
@@ -94,6 +95,7 @@ pub(crate) struct ApiKey {
 
 #[derive(Clone)]
 pub(crate) struct Provider {
+    pub(crate) credential: ProviderCredential,
     pub(crate) name: Arc<str>,
     pub(crate) base_url: Arc<str>,
     pub(crate) engine: Arc<str>,
@@ -116,9 +118,26 @@ pub(crate) struct Provider {
     pub(crate) cursor: Arc<AtomicUsize>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) enum ProviderCredential {
+    #[default]
+    Pooled,
+    CallerSupplied(Arc<str>),
+}
+
+impl ProviderCredential {
+    pub(crate) fn statistics_key(&self, pooled_key: &str) -> String {
+        match self {
+            Self::Pooled => pooled_key.to_owned(),
+            Self::CallerSupplied(_) => "BYOK".to_owned(),
+        }
+    }
+}
+
 pub(crate) fn runtime_provider(item: RawProvider, cursor: Arc<AtomicUsize>) -> Arc<Provider> {
     let name = item.name.trim().to_owned();
     Arc::new(Provider {
+        credential: crate::config::snapshot::ProviderCredential::Pooled,
         name: name.clone().into(),
         base_url: item.base_url.trim().to_owned().into(),
         engine: item.engine.unwrap_or_else(|| "gpt".into()).into(),

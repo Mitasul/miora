@@ -3,7 +3,6 @@
 use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Response, StatusCode};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
@@ -243,8 +242,15 @@ fn catalog(models: &[String]) -> Value {
 }
 
 pub(crate) fn response(models: &[String], headers: &HeaderMap) -> Response<Body> {
-    let body = serde_json::to_vec(&catalog(models)).expect("serializable model catalog");
-    let etag = format!("\"{:x}\"", Sha256::digest(&body));
+    let unique: BTreeSet<&str> = models.iter().map(String::as_str).collect();
+    let mut tag = 0xcbf2_9ce4_8422_2325u64;
+    for model in &unique {
+        for &byte in model.as_bytes().iter().chain(&[0xff]) {
+            tag ^= u64::from(byte);
+            tag = tag.wrapping_mul(0x0100_0000_01b3);
+        }
+    }
+    let etag = format!("\"{:016x}-{:x}\"", tag, unique.len());
     let unchanged = headers.get_all("if-none-match").iter().any(|value| {
         value.to_str().ok().is_some_and(|value| {
             value.split(',').any(|candidate| {
@@ -263,17 +269,17 @@ pub(crate) fn response(models: &[String], headers: &HeaderMap) -> Response<Body>
         .header("cache-control", "private, no-cache")
         .header("vary", "Authorization, X-Api-Key")
         .header("x-uni-api-models-source", "key-scoped-catalog");
-    if !unchanged {
-        response = response
-            .header("content-type", HeaderValue::from_static("application/json"))
-            .header("content-length", body.len());
+    if unchanged {
+        return response
+            .body(Body::empty())
+            .expect("valid model catalog response");
     }
+    let body = serde_json::to_vec(&catalog(models)).expect("serializable model catalog");
+    response = response
+        .header("content-type", HeaderValue::from_static("application/json"))
+        .header("content-length", body.len());
     response
-        .body(if unchanged {
-            Body::empty()
-        } else {
-            Body::from(body)
-        })
+        .body(Body::from(body))
         .expect("valid model catalog response")
 }
 

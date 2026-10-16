@@ -27,14 +27,14 @@ def verify(binary):
     threading.Thread(target=upstream.serve_forever,daemon=True).start()
     with tempfile.TemporaryDirectory(prefix='uni-controls-') as directory:
         root=Path(directory);port=free_port()
-        config={'providers':[{'provider':name,'base_url':f'http://127.0.0.1:{upstream.server_port}/{name}/v1/{endpoint}','engine':'gpt','api':'test-upstream','model':['model-a','model-b']}for name,endpoint in [('native','responses'),('compat','chat/completions')]],'api_keys':[{'api':'first','model':['all']},{'api':'ordinary','model':['native/*','compat/*']},{'api':'other','model':['all']}]}
+        config={'providers':[{'provider':name,'base_url':f'http://127.0.0.1:{upstream.server_port}/{name}/v1/{endpoint}','engine':'gpt','api':'test-upstream','model':['model-a','model-b']}for name,endpoint in [('native','responses'),('compat','chat/completions')]],'api_keys':[{'api':'first','role':'admin','model':['all']},{'api':'ordinary','model':['native/*','compat/*']},{'api':'other','model':['all']}]}
         config_path=root/'api.json';config_path.write_text(json.dumps(config));original=config_path.read_bytes()
         env=dict(os.environ,PORT=str(port),DISABLE_DATABASE='true',UNI_API_CONFIG_PATH=str(config_path),RUST_RESPONSES_CONFIG_SNAPSHOT_PATH=str(root/'snapshot.json'),UNI_API_SHARED_MEMORY_RESERVATION_PATH=str(root/'ledger'),RUST_REQUEST_SPOOL_DIRECTORY=str(root/'spool'),NO_PROXY='127.0.0.1,localhost',RUST_REQUEST_SPOOL_DISK_RESERVE_BPS='0',RUST_REQUEST_SPOOL_INODE_RESERVE_BPS='0')
         env={k:v for k,v in env.items()if not k.startswith('FACTS_S3_')}
         def call(method,path,body=None,key='first'):
             c=http.client.HTTPConnection('127.0.0.1',port,timeout=10);c.request(method,path,json.dumps(body)if body is not None else None,{'Authorization':'Bearer '+key,'Content-Type':'application/json'});r=c.getresponse();code=r.status;raw=r.read();c.close();return code,json.loads(raw)
         def start(log):
-            p=subprocess.Popen([str(binary)],cwd=root,env=env,stdout=log,stderr=log)
+            p=subprocess.Popen([str(binary)],cwd=root,env=env,stdout=log,stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             for _ in range(100):
                 try:
                     if call('GET','/healthz')[0]==200:return p

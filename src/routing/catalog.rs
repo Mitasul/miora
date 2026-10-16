@@ -16,16 +16,9 @@ pub(crate) fn key_id(token: &str) -> String {
     format!("key-{:x}", Sha256::digest(token.as_bytes()))
 }
 
-// The first configured key is the dashboard connection credential. This grants
-// catalog inspection, diagnostics and process-local routing controls. It does
-// not grant persistent configuration mutation or unrelated administrator APIs.
-pub(crate) fn can_inspect_all(snapshot: &Snapshot, caller: &ApiKey) -> bool {
-    snapshot
-        .api_key_order
-        .first()
-        .is_some_and(|token| token == caller.token.as_ref())
-        || caller.role.eq_ignore_ascii_case("admin")
-        || caller.role.to_ascii_lowercase().starts_with("admin-")
+// Cross-key catalog visibility requires an explicit administrator role.
+pub(crate) fn can_inspect_all(_snapshot: &Snapshot, caller: &ApiKey) -> bool {
+    caller.role.eq_ignore_ascii_case("admin")
 }
 
 pub(crate) fn keys(snapshot: &Snapshot, caller: &ApiKey) -> Vec<Value> {
@@ -68,12 +61,14 @@ pub(crate) fn entries(
 }
 
 fn provider_entries(provider: &Arc<Provider>, model: Option<&str>) -> Vec<Entry> {
-    let models: BTreeSet<_> = provider
-        .models
-        .keys()
-        .filter(|name| model.is_none_or(|wanted| name.as_str() == wanted))
-        .cloned()
-        .collect();
+    if let Some(model) = model {
+        return if provider.models.contains_key(model) {
+            vec![(provider.clone(), model.to_owned())]
+        } else {
+            Vec::new()
+        };
+    }
+    let models: BTreeSet<_> = provider.models.keys().cloned().collect();
     models
         .into_iter()
         .map(|name| (provider.clone(), name))
@@ -83,28 +78,47 @@ fn provider_entries(provider: &Arc<Provider>, model: Option<&str>) -> Vec<Entry>
 #[derive(Default)]
 struct Expansion {
     entries: Vec<Entry>,
-    seen_entries: BTreeSet<(String, String)>,
-    expanded_keys: BTreeSet<(String, Option<String>)>,
+    seen_entries: BTreeSet<(String, String, String)>,
+    expanded_keys: BTreeSet<(String, Option<String>, Vec<String>)>,
 }
 
 impl Expansion {
-    fn append(&mut self, entries: Vec<Entry>) {
+    fn append(&mut self, entries: Vec<Entry>, scope: &[&str]) {
         for (provider, model) in entries {
-            if self
-                .seen_entries
-                .insert((provider.name.to_string(), model.clone()))
-            {
+            if !matches_groups(&provider.preferences, scope) {
+                continue;
+            }
+            if self.seen_entries.insert((
+                provider.name.to_string(),
+                model.clone(),
+                provider.models.get(&model).cloned().unwrap_or_default(),
+            )) {
                 self.entries.push((provider, model));
             }
         }
     }
-    fn walk(&mut self, snapshot: &Snapshot, key: &ApiKey, only_model: Option<&str>) {
+    fn walk(
+        &mut self,
+        snapshot: &Snapshot,
+        key: &ApiKey,
+        only_model: Option<&str>,
+        inherited: Option<&[&str]>,
+    ) {
+        let mut scope: Vec<_> = groups(&key.preferences)
+            .into_iter()
+            .filter(|group| inherited.is_none_or(|parent| parent.contains(group)))
+            .collect();
+        if scope.is_empty() {
+            return;
+        }
+        scope.sort_unstable();
         // Memoizing each key/model pair preserves first occurrence order, avoids
         // exponential expansion of shared subgraphs, and terminates cycles.
-        if !self
-            .expanded_keys
-            .insert((key.token.to_string(), only_model.map(str::to_owned)))
-        {
+        if !self.expanded_keys.insert((
+            key.token.to_string(),
+            only_model.map(str::to_owned),
+            scope.iter().map(|group| (*group).to_owned()).collect(),
+        )) {
             return;
         }
         let rules: Vec<&str> = key
@@ -117,10 +131,15 @@ impl Expansion {
             let rule = rule.trim();
             if rule == "all" {
                 for provider in snapshot.providers.iter() {
-                    self.append(provider_entries(provider, only_model));
+                    self.append(provider_entries(provider, only_model), &scope);
+                }
+                let mut aliases = snapshot.virtual_models.keys().collect::<Vec<_>>();
+                aliases.sort();
+                for alias in aliases {
+                    self.global_model(snapshot, &scope, alias, only_model);
                 }
             } else if let Some(model) = rule.strip_prefix('<').and_then(|v| v.strip_suffix('>')) {
-                self.global_model(snapshot, model, only_model);
+                self.global_model(snapshot, &scope, model, only_model);
             } else if let Some((alias, requested)) = rule.split_once('/') {
                 if requested != "*" && only_model.is_some_and(|wanted| wanted != requested) {
                     continue;
@@ -131,27 +150,104 @@ impl Expansion {
                     Some(requested)
                 };
                 if let Some(child) = snapshot.api_keys.get(alias) {
-                    self.walk(snapshot, child, model);
+                    self.walk(snapshot, child, model, Some(&scope));
                 } else if let Some(provider) = snapshot.providers_by_name.get(alias) {
-                    self.append(provider_entries(provider, model));
+                    self.append(provider_entries(provider, model), &scope);
                 }
             } else {
-                self.global_model(snapshot, rule, only_model);
+                self.global_model(snapshot, &scope, rule, only_model);
             }
         }
     }
-    fn global_model(&mut self, snapshot: &Snapshot, model: &str, only_model: Option<&str>) {
+    fn global_model(
+        &mut self,
+        snapshot: &Snapshot,
+        scope: &[&str],
+        model: &str,
+        only_model: Option<&str>,
+    ) {
         if only_model.is_some_and(|wanted| wanted != model) {
             return;
         }
+        if let Some(routes) = snapshot.virtual_models.get(model) {
+            self.append(
+                routes
+                    .iter()
+                    .map(|provider| (provider.clone(), model.to_owned()))
+                    .collect(),
+                scope,
+            );
+            return;
+        }
         for provider in snapshot.providers.iter() {
-            self.append(provider_entries(provider, Some(model)));
+            self.append(provider_entries(provider, Some(model)), scope);
         }
     }
 }
 
 pub(crate) fn ordered_entries(snapshot: &Snapshot, key: &ApiKey) -> Vec<Entry> {
     let mut expansion = Expansion::default();
-    expansion.walk(snapshot, key, None);
+    expansion.walk(snapshot, key, None, None);
     expansion.entries
+}
+
+pub(crate) fn model_entries(snapshot: &Snapshot, key: &ApiKey, model: &str) -> Vec<Entry> {
+    let mut expansion = Expansion::default();
+    expansion.walk(snapshot, key, Some(model), None);
+    expansion.entries
+}
+
+pub(crate) fn groups(preferences: &serde_json::Map<String, Value>) -> Vec<&str> {
+    let values: Vec<_> = preferences
+        .get("groups")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if values.is_empty() {
+        vec!["default"]
+    } else {
+        values
+    }
+}
+
+pub(crate) fn group_allowed(provider: &Provider, key: &ApiKey) -> bool {
+    matches_groups(&provider.preferences, &groups(&key.preferences))
+}
+
+fn matches_groups(preferences: &serde_json::Map<String, Value>, scope: &[&str]) -> bool {
+    match preferences.get("groups").and_then(Value::as_array) {
+        Some(groups) => groups
+            .iter()
+            .any(|group| group.as_str().is_some_and(|group| scope.contains(&group))),
+        None => scope.contains(&"default"),
+    }
+}
+
+#[cfg(test)]
+mod workspace_features {
+    use super::*;
+
+    #[test]
+    fn group_membership_is_an_intersection_not_a_label() {
+        let preferences = serde_json::from_value(json!({"groups":["prod","shared"]})).unwrap();
+        assert!(matches_groups(&preferences, &["prod"]));
+        assert!(matches_groups(&preferences, &["dev", "shared"]));
+        assert!(!matches_groups(&preferences, &["dev"]));
+        assert!(!matches_groups(&preferences, &[]));
+        assert!(matches_groups(&serde_json::Map::new(), &["default"]));
+        assert!(!matches_groups(&serde_json::Map::new(), &["prod"]));
+    }
+
+    #[test]
+    fn disabled_keys_are_not_compiled() {
+        let mut row =
+            json!({"api":"fixture","name":"development","groups":["dev"],"enabled":false});
+        assert!(crate::config::compiler::compile_api_key(&row, true).is_none());
+        row["enabled"] = json!(true);
+        let compiled = crate::config::compiler::compile_api_key(&row, true).unwrap();
+        assert_eq!(compiled["preferences"]["groups"], json!(["dev"]));
+        assert_eq!(compiled["preferences"]["name"], "development");
+    }
 }

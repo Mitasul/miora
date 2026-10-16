@@ -762,10 +762,7 @@ impl GatewayRuntime {
             let mut merged = crate::control::global_settings::document(&effective.preferences);
             merged["provider"] = json!(provider);
             let settings = state.settings.get(provider).cloned().unwrap_or_default();
-            let fields=crate::control::global_settings::KEYS.iter().map(|k| {
-                let v=merged["preferences"].get(*k).cloned().or_else(||crate::control::global_settings::default_value(k));
-                (format!("/preferences/{k}"),json!({"value":v,"inherited_value":crate::control::global_settings::default_value(k),"inherited_source":"default","source":if merged["preferences"].get(*k).is_some(){"global"}else{"default"},"can_inherit":true,"note":crate::control::global_settings::note(k)}))
-            }).collect::<serde_json::Map<_,_>>();
+            let fields = crate::control::global_settings::resolved_fields(&merged);
             return Ok(
                 json!({"provider":provider,"kind":"global","revision":state.revision(&base),"base":raw,"effective":merged,"override_paths":settings.set.keys().chain(settings.remove.iter()).collect::<Vec<_>>(),"affected_keys":base.api_key_order.iter().map(|t|json!({"key_id":crate::routing::catalog::key_id(t),"models":[]})).collect::<Vec<_>>(),"available_keys":[],"global_preferences":{},"resolved_fields":fields,"schema":crate::control::global_settings::schema()}),
             );
@@ -879,7 +876,7 @@ impl GatewayRuntime {
             "Configuration unavailable".into(),
         ))?;
         Ok(
-            json!({"revision":state.revision(&base),"channel_settings":state.settings,"digest":digest(&state.settings),"temporary_definitions":state.settings_definitions(&base)}),
+            json!({"revision":state.revision(&base),"channel_settings":state.settings,"temporary_definitions":state.settings_definitions(&base)}),
         )
     }
     pub(crate) async fn settings_operation(&self, id: &str) -> Result<Value, Failure> {
@@ -1215,7 +1212,7 @@ impl GatewayRuntime {
                 p["affected_keys"] = json!(affected(&effective, &name));
             }
         }
-        let mut result = json!({"operation_id":input.operation_id,"status":if apply{"applied"}else{"validated"},"revision":if apply{candidate.revision(&base)}else{state.revision(&base)},"previews":previews,"settings_digest":digest(&candidate.settings)});
+        let mut result = json!({"operation_id":input.operation_id,"status":if apply{"applied"}else{"validated"},"revision":if apply{candidate.revision(&base)}else{state.revision(&base)},"previews":previews});
         result["intent"] = json!({"settings":candidate.settings,"temporary_definitions":candidate.settings_definitions(&base)});
         if apply {
             candidate
@@ -1734,6 +1731,7 @@ mod tests {
             },
         ));
         let base = Snapshot {
+            virtual_models: Arc::new(HashMap::new()),
             revision: "base-one".into(),
             preferences: Arc::new(serde_json::Map::new()),
             api_keys: Arc::new(keys),

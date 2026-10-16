@@ -79,7 +79,7 @@ def verify(binary):
                  "engine": "gpt", "api": "fixture-chat", "model": ["chat-model"]},
             ],
             "api_keys": [
-                {"api": "admin", "model": ["all"]},
+                {"api": "admin", "role": "admin", "model": ["all"]},
                 {"api": "business", "model": ["jev/*", "jev-discovery/*"], "preferences": {"AUTO_RETRY": False}},
                 {"api": "other", "model": ["chat/*"]},
             ],
@@ -105,7 +105,7 @@ def verify(binary):
             return result
 
         with (root / "gateway.log").open("w+") as log:
-            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log)
+            process = subprocess.Popen([str(binary)], cwd=root, env=env, stdout=log, stderr=log, creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
             try:
                 for _ in range(120):
                     try:

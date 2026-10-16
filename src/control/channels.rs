@@ -152,7 +152,7 @@ impl Controls {
         let bootstrap = self.bootstrap_restore.as_ref().map(|b| {
             json!({"snapshot_id":b.snapshot_id,"applied_revision":b.applied_revision,"unchanged":b.applied_revision == self.revision(snapshot)})
         });
-        json!({"revision":self.revision(snapshot),"instance_id":self.instance,"config_revision":snapshot.revision.as_ref(),"bootstrap_restore":bootstrap,"storage":"process_memory","channel_definitions":!self.temporary_documents.is_empty(),"channel_definitions_digest":crate::control::settings::digest(&self.settings_definitions(snapshot)),"channel_settings":true,"automatic_engine":true,"channel_settings_digest":crate::control::settings::digest(&self.settings),"temporary_channel_import":true,"temporary_channel_management":true,"temporary_channel_restore":true,"reset_on_restart":true,"expires_at":null,"rules":self.rules.values().collect::<Vec<_>>(),"temporary_channels":self.temporary.values().map(|p|json!({"provider":p.name.as_ref(),"identity_changed":self.settings.get(p.name.as_ref()).is_some_and(crate::control::settings::identity_changed),"api_key_id":p.preferences.get("__temporary_key_id"),"models":self.effective_temporary(p,snapshot).models.keys().cloned().collect::<BTreeSet<_>>()})).collect::<Vec<_>>()})
+        json!({"revision":self.revision(snapshot),"instance_id":self.instance,"config_revision":snapshot.revision.as_ref(),"bootstrap_restore":bootstrap,"storage":"process_memory","channel_definitions":!self.temporary_documents.is_empty(),"channel_settings":true,"automatic_engine":true,"temporary_channel_import":true,"temporary_channel_management":true,"temporary_channel_restore":true,"reset_on_restart":true,"expires_at":null,"rules":self.rules.values().collect::<Vec<_>>(),"temporary_channels":self.temporary.values().map(|p|json!({"provider":p.name.as_ref(),"identity_changed":self.settings.get(p.name.as_ref()).is_some_and(crate::control::settings::identity_changed),"api_key_id":p.preferences.get("__temporary_key_id"),"models":self.effective_temporary(p,snapshot).models.keys().cloned().collect::<BTreeSet<_>>()})).collect::<Vec<_>>()})
     }
     pub fn overlay(&self, base: Arc<Snapshot>) -> Arc<Snapshot> {
         if self.temporary.is_empty() && self.settings.is_empty() {
@@ -228,6 +228,10 @@ impl Controls {
         }
         snapshot.providers = Arc::new(providers);
         snapshot.providers_by_name = Arc::new(by_name);
+        snapshot.virtual_models = Arc::new(crate::config::virtual_models::runtime(
+            &snapshot.preferences,
+            &snapshot.providers_by_name,
+        ));
         snapshot.api_keys = Arc::new(keys);
         let snapshot = Arc::new(snapshot);
         *cache = Some((base.revision.to_string(), self.sequence, snapshot.clone()));
@@ -546,6 +550,7 @@ impl GatewayRuntime {
             models.insert(model.clone(), model.clone());
         }
         let provider = Arc::new(Provider {
+            credential: crate::config::snapshot::ProviderCredential::Pooled,
             name: input.provider.clone().into(),
             base_url: input.base_url.into(),
             engine: "gpt".into(),
@@ -846,6 +851,7 @@ impl GatewayRuntime {
                 return Err(bad("Invalid retained address"));
             }
             let provider = Arc::new(Provider {
+                credential: crate::config::snapshot::ProviderCredential::Pooled,
                 name: p.provider.clone().into(),
                 base_url: p.base_url.into(),
                 engine: "gpt".into(),
