@@ -1,7 +1,6 @@
 services:
   miora:
-    build: .
-    image: miora:latest
+    image: ghcr.io/mitasul/miora:latest
     container_name: miora
     restart: unless-stopped
     ports:

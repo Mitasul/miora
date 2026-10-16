@@ -57,9 +57,11 @@
 
 ---
 
-## Docker 快速部署（推荐）
+## Docker 快速部署（推荐：直接拉取预编译镜像，无需编译）
 
-### 1. 使用 `docker compose` 一键启动
+每次推送到 `main` 后，GitHub Actions 会自动编译并发布预构建镜像 `ghcr.io/mitasul/miora:latest`，服务器上**无需本地编译 Rust**，几秒即可启动：
+
+### 1. 使用 `docker compose` 一键秒级启动
 
 ```bash
 git clone https://github.com/Mitasul/miora.git
@@ -71,17 +73,16 @@ mkdir -p miora_data
 # 2. 若从 Zoaholic / 旧环境迁移，直接将已有 api.yaml 放入 miora_data：
 # cp /path/to/your/api.yaml ./miora_data/api.yaml
 
-# 3. 编辑 docker-compose.yml 中的 MIORA_ADMIN_PASSWORD（至少 12 位），然后启动：
-docker compose up -d --build
+# 3. 编辑 docker-compose.yml 中的 MIORA_ADMIN_PASSWORD（至少 12 位），然后直接拉镜像启动：
+docker compose up -d
 ```
 
-启动后访问 `http://服务器IP:8000/login`，使用用户名 `admin` 与设置的密码登录后台。
+启动后访问 `http://服务器IP:8000/login`，使用用户名 `admin` 与设置的密码登录后台。  
+*(如需在本地从源码自建镜像，可运行 `docker build -t ghcr.io/mitasul/miora:latest .`)*
 
-### 2. 使用 `docker run` 启动
+### 2. 使用 `docker run` 直接启动
 
 ```bash
-docker build -t miora:latest .
-
 docker run -d \
   --name miora \
   --restart unless-stopped \
@@ -95,7 +96,7 @@ docker run -d \
   -e DB_PATH=/home/data/stats.db \
   -e MIORA_PLUGIN_STORE_DIR=/home/data/plugins \
   -v $(pwd)/miora_data:/home/data \
-  miora:latest
+  ghcr.io/mitasul/miora:latest
 ```
 
 ---
