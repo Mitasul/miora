@@ -1,6 +1,6 @@
 import * as api from './api.js';
 import { icon, aiIcon, modelBrand } from './icons.js';
-import { esc, fmt, field, select, badge, dialog, failure, empty, parseJSON } from './ui.js';
+import { esc, fmt, field, select, badge, dialog, failure, empty, parseJSON, toast } from './ui.js';
 
 export function buildTestExtra({ temperature = '', topP = '', reasoningEffort = '' } = {}, baseExtra = {}) {
   const extra = { ...baseExtra };
@@ -42,9 +42,10 @@ export function availableTestModels(rows, provider = '', targeted = false) {
   return [...new Set(rows.filter(row => !provider || targeted && row.provider === provider).map(row => row.model))];
 }
 
-export function openChannelTestDialog(channelOrList) {
+export function openChannelTestDialog(channelOrList, options = {}) {
   const channelList = Array.isArray(channelOrList) ? channelOrList : [channelOrList].filter(Boolean);
   const multiChannel = channelList.length > 1;
+  const writable = options.writable !== false;
   const items = [];
   for (const ch of channelList) {
     const rawModels = Array.isArray(ch?.models) ? ch.models : [];
@@ -56,6 +57,7 @@ export function openChannelTestDialog(channelOrList) {
       items.push({ key: `${ch.provider}::${model}`, provider: ch.provider, model });
     }
   }
+  const selectedKeys = new Set(items.map(item => item.key));
   const results = new Map();
   let form, closed = false, running = false, batchController = null;
   function readParams() {
@@ -85,27 +87,34 @@ export function openChannelTestDialog(channelOrList) {
   function renderRows() {
     if (!form || closed) return;
     const visible = visibleItems();
+    const selectedVisible = visible.filter(item => selectedKeys.has(item.key));
     const listRoot = form.querySelector('[data-channel-test-list]');
     const allBtn = form.querySelector('[data-channel-test-all]');
     const retryBtn = form.querySelector('[data-channel-test-retry-failed]');
+    const removeBtn = form.querySelector('[data-channel-test-remove-failed]');
     const stopBtn = form.querySelector('[data-channel-test-stop]');
     const failedCount = items.filter(item => results.get(item.key)?.status === 'error').length;
     const okCount = items.filter(item => results.get(item.key)?.status === 'ok').length;
     if (allBtn) {
-      allBtn.disabled = running || !visible.length;
-      allBtn.innerHTML = `${icon('pulse')}批量测试 (${visible.length})`;
+      allBtn.disabled = running || !selectedVisible.length;
+      allBtn.innerHTML = `${icon('pulse')}批量测试 (${selectedVisible.length})`;
     }
     if (retryBtn) {
       retryBtn.hidden = failedCount === 0;
       retryBtn.disabled = running;
       retryBtn.innerHTML = `${icon('refresh')}重测失败 (${failedCount})`;
     }
+    if (removeBtn) {
+      removeBtn.hidden = !writable || failedCount === 0;
+      removeBtn.disabled = running;
+      removeBtn.innerHTML = `${icon('trash')}移除失败 (${failedCount})`;
+    }
     if (stopBtn) stopBtn.hidden = !running;
     const summaryEl = form.querySelector('[data-channel-test-summary]');
     if (summaryEl) {
       summaryEl.innerHTML = (okCount || failedCount)
         ? `${badge(`成功 ${okCount}`, 'green')} ${failedCount ? badge(`失败 ${failedCount}`, 'orange') : ''}`
-        : '';
+        : `<span class="hint">已选 ${selectedVisible.length} / ${visible.length} 个模型</span>`;
     }
     if (!items.length) {
       listRoot.innerHTML = empty('暂未配置模型', '请先在「编辑 -> 模型与映射」中获取或添加模型。', 'box');
@@ -115,19 +124,61 @@ export function openChannelTestDialog(channelOrList) {
       listRoot.innerHTML = `<p class="hint">没有匹配的模型。</p>`;
       return;
     }
-    listRoot.innerHTML = `<div class="table-scroll"><table><thead><tr>${multiChannel ? '<th>渠道</th>' : ''}<th>模型</th><th>状态与响应</th><th>操作</th></tr></thead><tbody>${visible.map(item => {
+    const allChecked = visible.length > 0 && visible.every(item => selectedKeys.has(item.key));
+    listRoot.innerHTML = `<div class="table-scroll channel-test-scroll"><table class="channel-test-table"><thead><tr><th class="test-col-check"><input type="checkbox" data-channel-test-check-all aria-label="全选或取消全选"${allChecked ? ' checked' : ''}></th>${multiChannel ? '<th>渠道</th>' : ''}<th>模型</th><th>状态与响应</th><th>操作</th></tr></thead><tbody>${visible.map(item => {
       const state = results.get(item.key);
+      const checked = selectedKeys.has(item.key);
       let statusHtml = `<span class="hint">未测试</span>`;
       if (state?.status === 'testing') {
         statusHtml = `${badge('测试中…', 'purple')}`;
       } else if (state?.status === 'ok') {
         const reply = (state.reply || '').trim();
-        statusHtml = `${badge(`HTTP ${state.http_status} · ${fmt(state.elapsed_ms)} ms`, 'green')}${reply ? ` <span class="subline">${esc(reply.slice(0, 120))}</span>` : ''}`;
+        statusHtml = `${badge(`${fmt(state.elapsed_ms)} ms`, 'green')}${reply ? ` <span class="subline">${esc(reply.slice(0, 100))}</span>` : ''}`;
       } else if (state?.status === 'error') {
-        statusHtml = `${badge(`失败 · HTTP ${state.http_status || 'ERR'} · ${fmt(state.elapsed_ms || 0)} ms`, 'orange')}<span class="subline text-danger">${esc((state.error || '请求失败').slice(0, 160))}</span>`;
+        statusHtml = `${badge(`HTTP ${state.http_status || 'ERR'}`, 'orange')}<span class="subline text-danger">${esc((state.error || '请求失败').slice(0, 140))}</span>`;
       }
-      return `<tr>${multiChannel ? `<td>${badge(item.provider)}</td>` : ''}<td><div class="table-name"><span class="row-icon">${aiIcon(modelBrand(item.model))}</span><strong>${esc(item.model)}</strong></div></td><td>${statusHtml}</td><td><button type="button" class="button small" data-channel-test-single="${esc(item.key)}"${state?.status === 'testing' ? ' disabled' : ''}>${icon('pulse')}测试</button></td></tr>`;
+      return `<tr class="channel-test-row"><td class="test-col-check"><input type="checkbox" data-channel-test-check="${esc(item.key)}" aria-label="选择 ${esc(item.model)}"${checked ? ' checked' : ''}></td>${multiChannel ? `<td class="test-col-provider">${badge(item.provider)}</td>` : ''}<td class="test-col-model"><div class="table-name"><span class="row-icon">${aiIcon(modelBrand(item.model))}</span><strong>${esc(item.model)}</strong></div></td><td class="test-col-status">${statusHtml}</td><td class="test-col-action"><button type="button" class="button small" data-channel-test-single="${esc(item.key)}"${state?.status === 'testing' ? ' disabled' : ''}>${icon('pulse')}测试</button></td></tr>`;
     }).join('')}</tbody></table></div>`;
+  }
+  async function removeFailedModels() {
+    const failedItems = items.filter(item => results.get(item.key)?.status === 'error');
+    if (!failedItems.length || running) return;
+    const byProvider = new Map();
+    for (const item of failedItems) {
+      if (!byProvider.has(item.provider)) byProvider.set(item.provider, new Set());
+      byProvider.get(item.provider).add(item.model);
+    }
+    let removedTotal = 0;
+    for (const [provider, failedSet] of byProvider.entries()) {
+      const detail = await api.get(`/channels/detail?${new URLSearchParams({ provider })}`);
+      const rawModels = Array.isArray(detail.base?.model) ? detail.base.model : [];
+      const nextModels = rawModels.filter(entry => {
+        if (typeof entry === 'string') return !failedSet.has(entry);
+        if (entry && typeof entry === 'object') {
+          const [up, pub] = Object.entries(entry)[0] || [];
+          return !failedSet.has(pub) && !failedSet.has(up);
+        }
+        return true;
+      });
+      if (!nextModels.length) {
+        toast(`渠道「${provider}」至少需保留 1 个模型，未清空`);
+        continue;
+      }
+      await api.patch('/channels', { revision: detail.revision, provider, patch: { model: nextModels } });
+      for (let i = items.length - 1; i >= 0; i--) {
+        if (items[i].provider === provider && failedSet.has(items[i].model)) {
+          selectedKeys.delete(items[i].key);
+          results.delete(items[i].key);
+          items.splice(i, 1);
+          removedTotal++;
+        }
+      }
+    }
+    if (removedTotal > 0) {
+      toast(`已移除 ${removedTotal} 个测试失败模型`);
+      renderRows();
+      await options.onUpdated?.();
+    }
   }
   async function testSingle(item, signal) {
     const { endpoint, prompt, limit, extra } = readParams();
@@ -187,7 +238,7 @@ export function openChannelTestDialog(channelOrList) {
     size: 'wide',
     submitLabel: '关闭',
     showCancel: false,
-    body: `<div class="test-params-bar"><label class="test-param-item"><span>测试内容</span><input type="text" data-test-param="prompt" value="hi" placeholder="例如 hi"></label><label class="test-param-item"><span>温度 (Temp)</span><div class="inline-row"><select data-test-param="temperature"><option value="">默认 (不传)</option><option value="0">0 (确定)</option><option value="0.2">0.2 (严谨)</option><option value="0.5">0.5 (均衡)</option><option value="0.7">0.7 (标准)</option><option value="1">1.0 (发散)</option><option value="custom">自定义…</option></select><input type="number" data-test-param="temperature-custom" step="0.1" min="0" max="2" placeholder="0.0-2.0" hidden></div></label><label class="test-param-item"><span>Top P</span><input type="number" data-test-param="top_p" step="0.05" min="0" max="1" placeholder="默认不传"></label><label class="test-param-item"><span>最大 Token</span><input type="number" data-test-param="max_tokens" step="1" min="1" value="16" placeholder="16"></label><label class="test-param-item"><span>思考强度</span><select data-test-param="reasoning_effort"><option value="">默认 (不传)</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label><label class="test-param-item"><span>并发数</span><select data-test-param="concurrency"><option value="1">1 并发</option><option value="3" selected>3 并发</option><option value="5">5 并发</option><option value="10">10 并发</option></select></label><label class="test-param-item"><span>端点</span><select data-test-param="endpoint"><option value="/v1/chat/completions">Chat</option><option value="/v1/responses">Responses</option></select></label></div><div class="toolbar"><div class="inline-row"><div class="search-field">${icon('search')}<input type="search" data-channel-test-search placeholder="搜索模型…" aria-label="搜索模型"></div><select data-channel-test-filter aria-label="状态筛选"><option value="">全部状态</option><option value="ok">仅看成功</option><option value="error">仅看失败</option><option value="pending">未测试</option></select><span data-channel-test-summary></span></div><div class="table-actions"><span class="hint" data-channel-test-progress role="status"></span><button type="button" class="button" data-channel-test-retry-failed hidden>${icon('refresh')}重测失败</button><button type="button" class="button primary" data-channel-test-all>${icon('pulse')}批量测试</button><button type="button" class="button text-danger" data-channel-test-stop hidden>停止</button>${singleProvider ? `<a class="button" href="#testing?provider=${encodeURIComponent(singleProvider)}" data-channel-test-advanced>高级调试</a>` : ''}</div></div><div data-channel-test-list></div>`,
+    body: `<div class="toolbar channel-test-toolbar"><div class="inline-row channel-test-filters"><div class="search-field">${icon('search')}<input type="search" data-channel-test-search placeholder="搜索模型…" aria-label="搜索模型"></div><select data-channel-test-filter aria-label="状态筛选"><option value="">全部状态</option><option value="ok">仅看成功</option><option value="error">仅看失败</option><option value="pending">未测试</option></select><span data-channel-test-summary></span></div><div class="table-actions"><span class="hint" data-channel-test-progress role="status"></span><button type="button" class="button small" data-channel-test-invert>反选</button><button type="button" class="button small" data-channel-test-retry-failed hidden>${icon('refresh')}重测失败</button><button type="button" class="button small text-danger" data-channel-test-remove-failed hidden>${icon('trash')}移除失败</button><button type="button" class="button small primary" data-channel-test-all>${icon('pulse')}批量测试</button><button type="button" class="button small text-danger" data-channel-test-stop hidden>停止</button></div></div><details class="test-params-details"><summary>测试参数设置（默认发 "hi" · 3 并发 · 可自选温度与思考强度）</summary><div class="test-params-bar"><label class="test-param-item"><span>测试内容</span><input type="text" data-test-param="prompt" value="hi" placeholder="例如 hi"></label><label class="test-param-item"><span>温度 (Temp)</span><div class="inline-row"><select data-test-param="temperature"><option value="">默认 (不传)</option><option value="0">0 (确定)</option><option value="0.2">0.2 (严谨)</option><option value="0.5">0.5 (均衡)</option><option value="0.7">0.7 (标准)</option><option value="1">1.0 (发散)</option><option value="custom">自定义…</option></select><input type="number" data-test-param="temperature-custom" step="0.1" min="0" max="2" placeholder="0.0-2.0" hidden></div></label><label class="test-param-item"><span>Top P</span><input type="number" data-test-param="top_p" step="0.05" min="0" max="1" placeholder="默认不传"></label><label class="test-param-item"><span>最大 Token</span><input type="number" data-test-param="max_tokens" step="1" min="1" value="16" placeholder="16"></label><label class="test-param-item"><span>思考强度</span><select data-test-param="reasoning_effort"><option value="">默认 (不传)</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label><label class="test-param-item"><span>并发数</span><select data-test-param="concurrency"><option value="1">1 并发</option><option value="3" selected>3 并发</option><option value="5">5 并发</option><option value="10">10 并发</option></select></label><label class="test-param-item"><span>端点</span><select data-test-param="endpoint"><option value="/v1/chat/completions">Chat</option><option value="/v1/responses">Responses</option></select></label></div></details><div data-channel-test-list></div>`,
     onSubmit: async () => {},
     onClose: () => { closed = true; batchController?.abort(); },
     onMount: mounted => {
@@ -203,6 +254,23 @@ export function openChannelTestDialog(channelOrList) {
           if (!tempCustom.hidden) tempCustom.focus();
         }
       });
+      form.addEventListener('change', event => {
+        if (event.target.matches('[data-channel-test-check-all]')) {
+          const checked = event.target.checked;
+          for (const item of visibleItems()) {
+            if (checked) selectedKeys.add(item.key);
+            else selectedKeys.delete(item.key);
+          }
+          renderRows();
+          return;
+        }
+        if (event.target.matches('[data-channel-test-check]')) {
+          const key = event.target.dataset.channelTestCheck;
+          if (event.target.checked) selectedKeys.add(key);
+          else selectedKeys.delete(key);
+          renderRows();
+        }
+      });
       form.addEventListener('click', event => {
         const single = event.target.closest('[data-channel-test-single]');
         if (single) {
@@ -210,10 +278,24 @@ export function openChannelTestDialog(channelOrList) {
           if (item) testSingle(item, batchController?.signal);
           return;
         }
-        if (event.target.closest('[data-channel-test-all]')) runQueue(visibleItems());
-        if (event.target.closest('[data-channel-test-retry-failed]')) runQueue(items.filter(i => results.get(i.key)?.status === 'error'));
+        if (event.target.closest('[data-channel-test-invert]')) {
+          for (const item of visibleItems()) {
+            if (selectedKeys.has(item.key)) selectedKeys.delete(item.key);
+            else selectedKeys.add(item.key);
+          }
+          renderRows();
+          return;
+        }
+        if (event.target.closest('[data-channel-test-all]')) {
+          runQueue(visibleItems().filter(item => selectedKeys.has(item.key)));
+        }
+        if (event.target.closest('[data-channel-test-retry-failed]')) {
+          runQueue(items.filter(i => results.get(i.key)?.status === 'error'));
+        }
+        if (event.target.closest('[data-channel-test-remove-failed]')) {
+          removeFailedModels().catch(err => toast(err.message));
+        }
         if (event.target.closest('[data-channel-test-stop]')) batchController?.abort();
-        if (event.target.closest('[data-channel-test-advanced]')) form.closest('dialog')?.close();
       });
     },
   });

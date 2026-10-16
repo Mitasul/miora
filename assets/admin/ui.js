@@ -66,6 +66,7 @@ export function dialog({ title, body, submitLabel = '保存更改', danger = fal
   if (modal.open) modal.close();
   const previous = document.activeElement;
   modal.classList.toggle('channel-dialog', size === 'channel');
+  modal.classList.toggle('wide-dialog', size === 'wide');
   modal.classList.toggle('request-log-dialog', size === 'request-log');
   modal.classList.toggle('plugin-upload-dialog', size === 'plugin-upload-dialog');
   document.querySelector('#dialog-content').innerHTML = `<form id="editor-form"><div class="dialog-head"><h2 id="dialog-title">${esc(title)}</h2><button class="icon-button" type="button" data-close aria-label="关闭对话框">${icon('close')}</button></div><div class="dialog-body">${body}</div><div class="notice danger dialog-error" role="alert" hidden></div><div class="form-footer">${showCancel ? '<button class="button" type="button" data-close>取消</button>' : ''}<button class="button ${danger ? 'danger' : 'primary'}" type="submit">${icon(danger ? 'alert' : 'check')}${esc(submitLabel)}</button></div></form>`;

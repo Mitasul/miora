@@ -4444,7 +4444,20 @@ html {
 .playground-assistant pre { font: inherit; line-height: 1.8; white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
 .playground-assistant details { margin: 8px 0; color: var(--muted); font-size: 12px; }
 .playground-lane > p { overflow-wrap: anywhere; }
-input[data-channel-select] { float: left; margin: 13px 12px 0 0; accent-color: var(--ink); }
+.channel-head-row { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.channel-head-row .table-name { min-width: 0; flex: 1; }
+input[data-channel-select] { margin: 10px 0 0; width: 16px; height: 16px; flex-shrink: 0; accent-color: var(--accent); cursor: pointer; }
+.channel-cell-type { white-space: nowrap; }
+.channel-cell-type .badge + .badge { margin-left: 4px; }
+.editor-dialog.wide-dialog { width: min(880px, calc(100vw - 32px)); max-width: 880px; }
+.test-params-details { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-subtle); }
+.test-params-details > summary { padding: 8px 12px; font-size: 12px; font-weight: 500; color: var(--muted); cursor: pointer; user-select: none; }
+.test-params-details[open] > summary { border-bottom: 1px solid var(--line); color: var(--ink); }
+.test-params-details .test-params-bar, .test-params-details .models-test-bar { margin: 0; border: 0; background: transparent; }
+.channel-test-toolbar { padding: 0 0 10px; margin-bottom: 10px; border-bottom: 1px solid var(--line); gap: 10px; }
+.channel-test-filters { margin-bottom: 0; flex-wrap: wrap; flex: 1; min-width: 0; }
+.test-col-check { width: 38px; text-align: center; }
+.test-col-check input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--accent); cursor: pointer; }
 @media (max-width: 760px) { .playground-models { grid-template-columns: 1fr; } }
 .test-controls .page-actions { flex-wrap: wrap; }
 .test-result { padding: 20px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
@@ -4459,10 +4472,210 @@ input[data-channel-select] { float: left; margin: 13px 12px 0 0; accent-color: v
   .workspace-files { max-height: 240px; }
   .workspace-editor .code-editor { min-height: 380px; }
 }
+@media (max-width: 760px) {
+  .channels-card .channels-batch-bar {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    padding: 10px 12px;
+  }
+  .channels-card .channels-batch-bar .button {
+    flex: 1 1 calc(33.33% - 6px);
+    min-width: 96px;
+    justify-content: center;
+  }
+  .channels-card .channels-filter-bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    gap: 8px;
+    padding: 10px 12px;
+    align-items: end;
+  }
+  .channels-card .channels-filter-bar .search-field {
+    grid-column: 1 / -1;
+    width: 100%;
+    max-width: none;
+  }
+  .channels-card .channels-filter-bar .field {
+    margin: 0;
+    width: 100%;
+    min-width: 0;
+  }
+  .channels-card .channels-filter-bar #clear-channel-filters {
+    grid-column: 1 / -1;
+    width: 100%;
+    justify-content: center;
+  }
+  .channels-card .table-scroll {
+    overflow-x: visible;
+  }
+  .channels-card table {
+    min-width: 0;
+    width: 100%;
+    display: block;
+  }
+  .channels-card thead {
+    display: none;
+  }
+  .channels-card tbody {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 12px;
+    background: var(--surface-subtle);
+  }
+  .channels-card tbody tr.channel-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--surface);
+  }
+  .channels-card tbody tr.channel-row[hidden] {
+    display: none !important;
+  }
+  .channels-card td.channel-cell-main {
+    grid-column: 1 / 2;
+    padding: 0;
+    border: 0;
+    min-width: 0;
+  }
+  .channels-card td.channel-cell-main .subline {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    display: block;
+  }
+  .channels-card td.channel-cell-type {
+    grid-column: 2 / 3;
+    padding: 0;
+    border: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 4px;
+  }
+  .channels-card td.channel-cell-type .badge + .badge {
+    margin-left: 0;
+  }
+  .channels-card td.channel-cell-models {
+    grid-column: 1 / -1;
+    padding: 8px 10px;
+    border: 0;
+    background: var(--surface-subtle);
+    border-radius: 4px;
+  }
+  .channels-card td.channel-cell-keys {
+    grid-column: 1 / -1;
+    padding: 0;
+    border: 0;
+    font-size: 12px;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .channels-card td.channel-cell-keys::before {
+    content: "配置账号 / 密钥数：";
+    color: var(--muted);
+  }
+  .channels-card td.channel-cell-actions {
+    grid-column: 1 / -1;
+    padding: 10px 0 0;
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+  .channels-card td.channel-cell-actions .table-actions {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    width: 100%;
+  }
+  .channels-card td.channel-cell-actions .button.small {
+    width: 100%;
+    justify-content: center;
+    padding: 6px 4px;
+    font-size: 12px;
+  }
+  .editor-dialog.wide-dialog {
+    width: 100vw;
+    max-width: 100vw;
+    height: 100dvh;
+    max-height: 100dvh;
+    margin: 0;
+    border: 0;
+    border-radius: 0;
+  }
+  .editor-dialog.wide-dialog #editor-form {
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+  .channel-test-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .channel-test-filters .search-field {
+    flex: 1 1 100%;
+    max-width: none;
+  }
+  .channel-test-toolbar .table-actions {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+  .channel-test-toolbar .table-actions .button {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+  .channel-test-scroll table.channel-test-table {
+    min-width: 0;
+    width: 100%;
+  }
+}
 @media (max-width: 600px) {
   .backend-log-row { grid-template-columns: minmax(0, 1fr) 64px; gap: 4px 8px; padding: 12px; }
   .backend-log-row > div { grid-column: 1 / -1; }
   .workspace-editor .form-footer { gap: 8px; }
   #workspace-save-state { width: 100%; }
   .group-tabs { padding: 12px; }
+  #check-update span:not([data-icon]) { display: none; }
+  .channel-test-table thead { display: none; }
+  .channel-test-table, .channel-test-table tbody { display: block; width: 100%; }
+  .channel-test-table tr.channel-test-row {
+    display: grid;
+    grid-template-columns: 28px minmax(0, 1fr) auto;
+    gap: 6px 8px;
+    align-items: center;
+    padding: 10px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .channel-test-table td { padding: 0; border: 0; }
+  .channel-test-table td.test-col-provider { grid-column: 2 / 3; }
+  .channel-test-table td.test-col-model { grid-column: 2 / 3; min-width: 0; }
+  .channel-test-table td.test-col-action { grid-column: 3 / 4; grid-row: 1 / 3; }
+  .channel-test-table td.test-col-status { grid-column: 2 / -1; padding-top: 2px; }
+  .account-pool-scroll table.account-pool-table { min-width: 0; width: 100%; display: block; }
+  .account-pool-table thead { display: none; }
+  .account-pool-table tbody { display: flex; flex-direction: column; gap: 10px; }
+  .account-pool-table tr.account-pool-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    padding: 12px;
+    border: 1px solid var(--line-strong);
+    border-radius: 4px;
+    background: var(--surface);
+  }
+  .account-pool-table td { padding: 0; border: 0; }
+  .account-pool-table td.account-col-id { grid-column: 1 / 2; min-width: 0; overflow-wrap: anywhere; }
+  .account-pool-table td.account-col-status { grid-column: 2 / 3; }
+  .account-pool-table td.account-col-cooldown, .account-pool-table td.account-col-fail { display: none; }
+  .account-pool-table td.account-col-auth { grid-column: 1 / -1; }
+  .account-pool-table td.account-col-action { grid-column: 1 / -1; padding-top: 8px; border-top: 1px solid var(--line); }
+  .account-pool-table td.account-col-action .table-actions { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+  .account-pool-table td.account-col-action .button { flex: 1 1 auto; justify-content: center; }
 }
