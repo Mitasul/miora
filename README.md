@@ -1,173 +1,96 @@
-<p align="center"><img src="assets/branding/miora-logo.jpg" alt="Miora logo" width="240"></p>
+<p align="center"><img src="assets/branding/miora-logo.jpg" alt="Miora" width="200"></p>
 
 <h1 align="center">Miora</h1>
 
-<p align="center">
-  <b>纯 Rust 单二进制高性能 AI API 网关与管理控制台</b><br>
-  <a href="./README.md">简体中文</a> · <a href="./README_CN.md">中文详版</a> · <a href="docs/channel-plugins.md">插件协议 (v1)</a> · <a href="docs/miora-migration.md">迁移与部署</a>
-</p>
+<p align="center">把不同的 AI 服务放在一个地方管理。</p>
 
----
+Miora 是用 Rust 编写的 AI API 网关，自带网页管理后台。你可以添加多个供应商的渠道，设置模型别名，给不同客户端分配调用 Key，并查看请求记录和用量。
 
-## 简介
+后台和网关一起运行，不需要另外部署前端。
 
-**Miora** 是一个纯 Rust 编写的单二进制 AI API 聚合网关与可视化管理平台。  
-它将多种上游大模型服务（OpenAI、Anthropic Claude、Google Gemini、OpenAI Codex、Antigravity 反重力、OpenRouter、Azure、DeepSeek、xAI 等）统一转换为标准 `/v1/chat/completions`、`/v1/responses`、`/v1/messages`、`/v1/embeddings` 等接口，内置现代 Web 管理控制台（`/login` 与 `/admin`），支持多渠道加权/轮询负载均衡、自动冷却、OAuth PKCE 授权与自动续期、可热加载的外部 HTTP/SSE 渠道插件以及全量模型并发批量测活。
+## 可以做什么
 
----
+- **管理渠道和模型**：配置供应商地址与凭据，获取模型列表，设置对外名称。
+- **分配访问权限**：创建调用 Key，通过分组控制可用渠道。
+- **转发模型请求**：提供 Chat Completions、Responses、Messages 等接口，支持流式输出。具体能力取决于渠道和模型。
+- **管理账号**：支持 Codex、Claude、Antigravity 的 OAuth 登录及凭据刷新。
+- **测试与排查**：单独或批量测试模型，查看请求日志、错误和 Token 用量。
+- **调整请求参数**：按渠道或模型设置参数，并预览处理后的请求。
+- **扩展渠道**：通过插件接入其他服务，详见[插件文档](docs/channel-plugins.md)。
 
-## 核心特性
+## 用 Docker 启动
 
-### 1. 单二进制内嵌管理控制台（`/login` & `/admin`）
-- **零外部前端依赖**：所有管理台 HTML/CSS/ES Modules 与 114 个 AI 品牌本地 SVG 图标直接编译进单个可执行文件，无需额外部署 Nginx 或 Node.js 前端容器。
-- **独立管理员安全域**：管理员登录与模型调用 `api_keys` 严格分离，采用 PBKDF2-SHA256 密码派生、CSRF Token 校验与默认 3 天会话有效期（`MIORA_ADMIN_SESSION_TTL_SECONDS=259200`）。
-
-### 2. 三大平台 OAuth 2.0 PKCE 授权与无感续期
-- 原生支持 **OpenAI Codex**、**Anthropic Claude**、**Antigravity（Google Cloud Code Assist `v1internal`）** 的 OAuth 2.0 PKCE (`S256`) 登录。
-- **本机自动监听 + 远程手动粘贴双模式**：
-  - 本机运行时自动监听回调端口（Codex `127.0.0.1:1455` / Antigravity `127.0.0.1:8085`），网页端实时轮询自动入库；
-  - 远程服务器或 Docker 容器部署时，复制浏览器跳转后的完整回调 URL（或 Claude 的 `code#state`）粘贴回后台弹窗即可完成绑定。
-- **自动刷新与持久化**：运行时在 Token 到期前 60 秒自动使用 `refresh_token` 续期，并原子回写 `api.yaml`。
-
-### 3. 自选参数与全部模型并发批量测活
-- **全场景直连测活**：支持新建/编辑渠道时免保存直连草稿测活、渠道「账号池」单 Key 测活、渠道列表单渠道/跨渠道批量测试弹窗、以及独立 `#testing` 测试台。
-- **丰富自定义测试参数**：
-  - **测试提示词 (`prompt`)**：默认 `hi`，可任意修改；
-  - **温度 (`temperature`)**：支持预设档位（默认不传 / `0` / `0.2` / `0.5` / `0.7` / `1.0`）或选择「自定义…」输入 `0.0–2.0` 任意数值；
-  - **Top P (`top_p`)**、**最大输出 Token (`max_tokens`)**、**思考强度 (`reasoning_effort`: `low` / `medium` / `high`)**；
-  - **协议端点切换**：`/v1/chat/completions` 或 `/v1/responses`；
-  - **并发控制**：支持 `1 / 3 / 5 / 10` 并发批量测活。
-- **结果筛选与一键清理**：支持按全部/成功/失败/未测试筛选、一键重测失败项，以及在渠道编辑器内**一键移除测活失败的模型**。
-
-### 4. 内置核心适配器 + 动态外部渠道插件（`miora.plugin.v1`）
-- **7 大核心内置适配器**：
-  - `openai`（OpenAI 兼容，适用 DeepSeek / xAI / SiliconFlow / Groq 等）
-  - `claude`（Anthropic `/v1/messages`，支持 API Key 与 `sk-ant-oat...` OAuth 自动 `anthropic-beta` 头）
-  - `gemini`（Google Gemini 原生接口，支持 **Gemini 4 / 3.8** 自动过滤禁用采样参数与 `thinkingLevel` 映射）
-  - `codex`（OpenAI Codex Responses 接口 + OAuth PKCE）
-  - `antigravity`（Antigravity 反重力 `v1internal:generateContent` + Google OAuth + 自动获取 `project_id`）
-  - `openrouter`（OpenRouter 路由与模型发现）
-  - `azure`（Azure OpenAI 部署适配）
-- **外部 HTTP/SSE 渠道插件**：在后台「插件与拦截器」上传 `.miora.json` 描述文件即可在线注册、启停、升级与回滚独立插件服务，请求固定版本快照，热更新不中断在途流式响应。
-
-### 5. 三态渠道参数策略、可视分组与四阶段请求日志
-- **三态参数策略 (`parameter_policy`)**：按渠道与模型作用域配置参数继承、显式覆写或显式删除，支持零成本离线请求体预览。
-- **可视分组标签 (`.group-chip`)**：渠道与访问密钥均采用点击式标签选择器管理分组（内置 `default` / `vip` / `coding` / `fast` 并支持自定义分组）。
-- **四阶段请求日志与计费统计**：独立捕获客户端入站、路由重写、上游出站、上游响应四阶段数据，支持按渠道/按模型配置输入输出 Token 单价。
-
----
-
-## Docker 快速部署（推荐：直接拉取预编译镜像，无需编译）
-
-每次推送到 `main` 后，GitHub Actions 会自动编译并发布预构建镜像 `ghcr.io/mitasul/miora:latest`，服务器上**无需本地编译 Rust**，几秒即可启动：
-
-### 1. 使用 `docker compose` 一键秒级启动
+需要先安装 Docker 和 Docker Compose。
 
 ```bash
 git clone https://github.com/Mitasul/miora.git
 cd miora
+```
 
-# 1. 创建持久化数据目录（存放 api.yaml、SQLite 数据库与插件）
-mkdir -p miora_data
+打开 `docker-compose.yml`，将 `MIORA_ADMIN_PASSWORD` 改成自己的密码，至少 12 个字节。然后运行：
 
-# 2. 若从 Zoaholic / 旧环境迁移，直接将已有 api.yaml 放入 miora_data：
-# cp /path/to/your/api.yaml ./miora_data/api.yaml
-
-# 3. 编辑 docker-compose.yml 中的 MIORA_ADMIN_PASSWORD（至少 12 位），然后直接拉镜像启动：
+```bash
+docker compose pull
 docker compose up -d
 ```
 
-启动后访问 `http://服务器IP:8000/login`，使用用户名 `admin` 与设置的密码登录后台。  
-*(如需在本地从源码自建镜像，可运行 `docker build -t ghcr.io/mitasul/miora:latest .`)*
+默认端口是 `8000`。打开 `http://localhost:8000/admin`，使用 `admin` 和刚设置的密码登录。部署在服务器上时，将 `localhost` 换成服务器地址。
 
-### 2. 使用 `docker run` 直接启动
+首次进入后台后：
+
+1. 添加渠道，填写地址和凭据。
+2. 获取或手动添加模型，测试是否可用。
+3. 创建调用 Key，分配所需分组。
+4. 在客户端填写网关地址、调用 Key 和模型名称。
+
+例如，使用 OpenAI 兼容接口的客户端通常将 Base URL 填为 `http://localhost:8000/v1`。后台登录密码和模型调用 Key 是两回事。
+
+公网部署建议配置 HTTPS，并将 `MIORA_ADMIN_SECURE_COOKIE` 设为 `true`、`MIORA_ADMIN_ORIGIN` 设为实际访问地址。仓库默认 Compose 的 HTTP 设置适合初次试用。
+
+## 数据与更新
+
+默认 Compose 将数据保存在宿主机的 `./miora_data`，挂载到容器的 `/home/data`。配置、数据库和插件数据应保留在这个目录中，而不是只放在容器内。
+
+更新已发布的镜像：
 
 ```bash
-docker run -d \
-  --name miora \
-  --restart unless-stopped \
-  -p 8000:8000 \
-  -e MIORA_ADMIN_USERNAME=admin \
-  -e MIORA_ADMIN_PASSWORD=your-strong-password-12chars \
-  -e MIORA_ADMIN_SECURE_COOKIE=false \
-  -e MIORA_ADMIN_SESSION_TTL_SECONDS=259200 \
-  -e MIORA_BOOTSTRAP_EMPTY_CONFIG=true \
-  -e UNI_API_CONFIG_PATH=/home/data/api.yaml \
-  -e DB_PATH=/home/data/stats.db \
-  -e MIORA_PLUGIN_STORE_DIR=/home/data/plugins \
-  -v $(pwd)/miora_data:/home/data \
-  ghcr.io/mitasul/miora:latest
+docker compose pull
+docker compose up -d
 ```
 
----
+更新时继续使用原来的数据目录和部署配置，不要用仓库中的默认密码或挂载路径覆盖自己的设置。容器重建会短暂中断服务，也可能需要重新登录后台。涉及数据结构变化时，请先查看版本说明。
 
-## 从 Zoaholic 迁移说明
+镜像地址：`ghcr.io/mitasul/miora`。可使用 `latest`，也可以固定到已发布的提交标签。
 
-1. **直接复用 `api.yaml`**：将原有的 `api.yaml` 放入挂载目录 `/home/data/api.yaml`，原有的 `providers`、`api_keys`、模型映射（`upstream: public_alias`）、分组（`groups`）、权重与冷却配置原样生效。
-2. **动态模型拉取（无硬编码列表）**：在渠道编辑页点击 **「获取模型」** 即可实时请求上游 `/v1/models`，也可手动输入任何新发布的模型 ID。
-3. **OAuth 账号池迁移**：在「渠道与模型」点击对应渠道的 **「账号池」->「OAuth 登录」**，支持单渠道挂载多个 Codex / Claude / Antigravity OAuth 账号并自动轮询与续期。
+## 插件
 
----
+插件用于接入有特殊认证、参数或返回格式的渠道。安装方式、支持范围和开发示例见[渠道插件文档](docs/channel-plugins.md)及 [`examples/plugins`](examples/plugins)。
 
-## 外部渠道插件开发简述（`.miora.json`）
+不同供应商的接口不一定能无损转换。接入后应测试实际需要的能力，例如工具调用、图片和流式响应，而不只是检查模型列表。
 
-在后台 **「插件与拦截器」** 页面上传单个 `.miora.json` 服务描述文件即可安装自定义渠道插件：
+## 从源码构建
 
-```json
-{
-  "format": "miora.plugin.v1",
-  "manifest": {
-    "id": "my-provider",
-    "name": "My Provider",
-    "version": "1.0.0",
-    "api_version": 1,
-    "capabilities": {
-      "endpoints": ["/v1/chat/completions", "/v1/responses"],
-      "streaming": true,
-      "model_discovery": true
-    },
-    "config_schema": [
-      { "name": "api_key", "label": "API Key", "field_type": "secret", "required": true }
-    ]
-  },
-  "endpoint": "https://plugin.internal.example.com"
-}
+需要 Rust 工具链和 C 编译环境，具体版本要求见 `Cargo.toml`。
+
+```bash
+cargo build --release --locked
 ```
 
-完整插件协议与示例服务详见 **[docs/channel-plugins.md](docs/channel-plugins.md)** 与 `examples/plugins/`。
+生成的程序为 `target/release/uni-api-front`。运行前需要配置管理员凭据及配置文件路径，见[管理员配置](docs/admin.md)。
 
----
+## 文档
 
-## 环境变量说明
+- [管理员配置](docs/admin.md)
+- [渠道插件](docs/channel-plugins.md)
+- [请求参数设置](docs/parameter-policy.md)
+- [请求日志与清理](docs/request-logs.md)
+- [功能与限制](docs/gateway-features.md)
+- [管理界面](docs/admin-ui.md)
 
-| 变量名 | 默认值 | 说明 |
-| :--- | :--- | :--- |
-| `MIORA_ADMIN_USERNAME` | `admin` | 管理后台登录用户名 |
-| `MIORA_ADMIN_PASSWORD` | 无（必填其一） | 管理后台明文密码（12–1024 字节，启动时派生 PBKDF2-SHA256） |
-| `MIORA_ADMIN_PASSWORD_HASH` | 无（必填其一） | 预生成的 `pbkdf2-sha256$...` 哈希（由 `python scripts/hash-admin-password.py` 生成） |
-| `MIORA_ADMIN_SESSION_TTL_SECONDS` | `259200` (3天) | 管理后台登录有效期（`300` – `2592000` 秒，即 5 分钟至 30 天） |
-| `MIORA_ADMIN_SECURE_COOKIE` | `true` | 纯 HTTP 访问后台时请设为 `false`；HTTPS 环境保持 `true` |
-| `MIORA_ADMIN_ORIGIN` | 自动按 Host 推断 | 显式限制管理后台允许的 Origin（如 `https://api.example.com`） |
-| `MIORA_BOOTSTRAP_EMPTY_CONFIG` | `false` | 配置文件不存在时自动创建空 `api.yaml` |
-| `UNI_API_CONFIG_PATH` | `./api.yaml` | 渠道与密钥配置文件路径 |
-| `DB_PATH` | `./stats.db` | 用量统计与日志 SQLite 数据库路径 |
-| `MIORA_PLUGIN_STORE_DIR` | `./plugins` | 外部插件与拦截器存储目录 |
-| `ANTIGRAVITY_OAUTH_CLIENT_SECRET` | 内置默认值 | 可选自定义覆盖 Antigravity OAuth Client Secret |
+## 致谢
 
----
+Miora 基于 [uni-api](https://github.com/yym68686/uni-api) 开发，部分功能与界面设计参考了 [Zoaholic](https://github.com/HCPTangHY/Zoaholic)。感谢这些项目的作者和贡献者。
 
-## 文档目录
+## 许可证
 
-- [部署与迁移指南](docs/miora-migration.md)
-- [管理员安全与认证](docs/admin.md)
-- [渠道插件协议 (Service Protocol v1)](docs/channel-plugins.md)
-- [管理控制台 UI 与静态契约](docs/admin-ui.md)
-- [渠道三态参数策略与离线预览](docs/parameter-policy.md)
-- [四阶段请求日志留存与清理](docs/request-logs.md)
-- [网关功能清单](docs/gateway-features.md)
-- [性能验证报告](docs/performance.md)
-
-## 致谢与许可证
-
-- 本项目基于 [uni-api](https://github.com/yym68686/uni-api) 构建，并在演进过程中借鉴了 [Zoaholic](https://github.com/HCPTangHY/Zoaholic) 的部分功能与交互思路（如 OAuth 凭据管理、渠道插件化扩展、参数策略与模型批量测活体验）。
-- 遵循 **Apache-2.0 License** 开源许可证（保留上游历史声明与依赖归属，详见 [docs/dependency-licenses.md](docs/dependency-licenses.md)）。
+[Apache License 2.0](LICENSE)。第三方依赖说明见[依赖许可证](docs/dependency-licenses.md)。
