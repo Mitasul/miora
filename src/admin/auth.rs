@@ -176,6 +176,9 @@ impl AdminState {
         origin: Option<String>,
         ttl: Duration,
     ) -> Self {
+        let mut sessions_map = load_persisted_sessions();
+        let now_unix = unix_seconds();
+        sessions_map.retain(|_, s| s.expires_at > now_unix);
         Self {
             inner: Arc::new(Inner {
                 username,
@@ -184,7 +187,7 @@ impl AdminState {
                 origin,
                 ttl,
                 trusted_proxies: HashSet::new(),
-                sessions: Mutex::new(HashMap::new()),
+                sessions: Mutex::new(sessions_map),
                 attempts: Mutex::new(HashMap::new()),
                 hashing: Arc::new(Semaphore::new(4)),
                 audit: Mutex::new(VecDeque::new()),
@@ -222,23 +225,21 @@ impl AdminState {
         let Ok(origin) = origin.to_str() else {
             return false;
         };
+        let Ok(parsed) = url::Url::parse(origin) else {
+            return false;
+        };
         let expected = if let Some(configured) = &self.inner.origin {
             configured.clone()
         } else {
             let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
                 return false;
             };
-            format!(
-                "{}://{host}",
-                if self.inner.secure_cookie {
-                    "https"
-                } else {
-                    "http"
-                }
-            )
-        };
-        let Ok(parsed) = url::Url::parse(origin) else {
-            return false;
+            let scheme = if self.inner.secure_cookie || parsed.scheme() == "https" {
+                "https"
+            } else {
+                "http"
+            };
+            format!("{scheme}://{host}")
         };
         let Ok(expected) = url::Url::parse(&expected) else {
             return false;
@@ -309,11 +310,20 @@ impl AdminState {
     }
 
     pub(super) fn session(&self, headers: &HeaderMap) -> Option<Session> {
-        let token = cookie_token(headers)?;
+        let tokens = cookie_tokens(headers);
+        if tokens.is_empty() {
+            return None;
+        }
         let mut sessions = self.inner.sessions.lock().ok()?;
         let now = Instant::now();
-        sessions.retain(|_, session| session.expires > now);
-        sessions.get(&token_hash(&token)).cloned()
+        let now_unix = unix_seconds();
+        sessions.retain(|_, session| session.expires > now && session.expires_at > now_unix);
+        for token in tokens {
+            if let Some(found) = sessions.get(&token_hash(&token)).cloned() {
+                return Some(found);
+            }
+        }
+        None
     }
 
     pub(super) fn create_session(
@@ -332,21 +342,28 @@ impl AdminState {
             .sessions
             .lock()
             .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-        sessions.retain(|_, s| s.expires > Instant::now());
-        if let Some(old) = cookie_token(old_headers) {
+        let now = Instant::now();
+        let now_unix = unix_seconds();
+        sessions.retain(|_, s| s.expires > now && s.expires_at > now_unix);
+        for old in cookie_tokens(old_headers) {
             sessions.remove(&token_hash(&old));
         }
         if sessions.len() >= MAX_SESSIONS {
             return Err(StatusCode::SERVICE_UNAVAILABLE);
         }
         sessions.insert(token_hash(&token), session.clone());
+        save_persisted_sessions(&sessions);
         Ok((token, session))
     }
 
     pub(super) fn logout(&self, headers: &HeaderMap) {
-        if let Some(token) = cookie_token(headers) {
+        let tokens = cookie_tokens(headers);
+        if !tokens.is_empty() {
             if let Ok(mut sessions) = self.inner.sessions.lock() {
-                sessions.remove(&token_hash(&token));
+                for token in tokens {
+                    sessions.remove(&token_hash(&token));
+                }
+                save_persisted_sessions(&sessions);
             }
         }
     }
@@ -357,12 +374,23 @@ impl AdminState {
 
     pub(super) fn cookie(&self, token: &str) -> String {
         format!(
-            "{COOKIE}={token}; Path=/admin; HttpOnly; SameSite=Strict; Max-Age={}{}",
+            "{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={}{}",
             if token.is_empty() {
                 0
             } else {
                 self.inner.ttl.as_secs()
             },
+            if self.inner.secure_cookie {
+                "; Secure"
+            } else {
+                ""
+            }
+        )
+    }
+
+    pub(super) fn clear_legacy_cookie(&self) -> String {
+        format!(
+            "{COOKIE}=; Path=/admin; HttpOnly; SameSite=Lax; Max-Age=0{}",
             if self.inner.secure_cookie {
                 "; Secure"
             } else {
@@ -438,27 +466,101 @@ fn constant_time_equal(left: &[u8], right: &[u8]) -> bool {
     ring::constant_time::verify_slices_are_equal(left, right).is_ok()
 }
 
-fn cookie_token(headers: &HeaderMap) -> Option<String> {
-    let mut result = None;
+fn cookie_tokens(headers: &HeaderMap) -> Vec<String> {
+    let mut results = Vec::new();
     for cookie in headers.get_all("cookie") {
-        let cookie = cookie.to_str().ok()?;
+        let Ok(cookie) = cookie.to_str() else {
+            continue;
+        };
         for pair in cookie.split(';') {
             if let Some((name, value)) = pair.trim().split_once('=') {
-                if name == COOKIE {
-                    if result.is_some()
-                        || value.len() != 43
-                        || !value
-                            .bytes()
-                            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-                    {
-                        return None;
-                    }
-                    result = Some(value.to_owned());
+                if name == COOKIE
+                    && value.len() == 43
+                    && value
+                        .bytes()
+                        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                {
+                    results.push(value.to_owned());
                 }
             }
         }
     }
-    result
+    results
+}
+
+fn sessions_file_path() -> std::path::PathBuf {
+    let docker_data = std::path::Path::new("/home/data");
+    if docker_data.is_dir() {
+        return docker_data.join(".miora_sessions.json");
+    }
+    let local_dir = std::path::Path::new(".miora");
+    if local_dir.is_dir() {
+        return local_dir.join("sessions.json");
+    }
+    std::path::PathBuf::from(".miora_sessions.json")
+}
+
+fn load_persisted_sessions() -> HashMap<[u8; 32], Session> {
+    let path = sessions_file_path();
+    let Ok(raw) = std::fs::read(&path) else {
+        return HashMap::new();
+    };
+    let Ok(entries) = serde_json::from_slice::<Vec<Value>>(&raw) else {
+        return HashMap::new();
+    };
+    let now_unix = unix_seconds();
+    let now_instant = Instant::now();
+    let mut map = HashMap::new();
+    for entry in entries {
+        let Some(hash_hex) = entry.get("h").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(csrf) = entry.get("c").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(expires_at) = entry.get("e").and_then(Value::as_u64) else {
+            continue;
+        };
+        if expires_at <= now_unix {
+            continue;
+        }
+        let Ok(hash_bytes) = hex::decode(hash_hex) else {
+            continue;
+        };
+        if hash_bytes.len() != 32 {
+            continue;
+        }
+        let mut key = [0u8; 32];
+        key.copy_from_slice(&hash_bytes);
+        let remaining = Duration::from_secs(expires_at.saturating_sub(now_unix));
+        map.insert(
+            key,
+            Session {
+                csrf: csrf.to_owned(),
+                expires_at,
+                expires: now_instant + remaining,
+            },
+        );
+    }
+    map
+}
+
+fn save_persisted_sessions(sessions: &HashMap<[u8; 32], Session>) {
+    let now_unix = unix_seconds();
+    let entries: Vec<Value> = sessions
+        .iter()
+        .filter(|(_, s)| s.expires_at > now_unix)
+        .map(|(k, s)| {
+            json!({
+                "h": hex::encode(k),
+                "c": s.csrf,
+                "e": s.expires_at,
+            })
+        })
+        .collect();
+    if let Ok(raw) = serde_json::to_vec(&entries) {
+        let _ = std::fs::write(sessions_file_path(), raw);
+    }
 }
 
 fn token_hash(token: &str) -> [u8; 32] {
@@ -520,7 +622,7 @@ mod tests {
         headers.insert("cookie", format!("{COOKIE}={second}").parse().unwrap());
         state.logout(&headers);
         assert!(state.session(&headers).is_none());
-        assert!(state.cookie(&second).contains("HttpOnly; SameSite=Strict"));
+        assert!(state.cookie(&second).contains("Path=/; HttpOnly; SameSite=Lax"));
         assert!(state.cookie(&second).ends_with("; Secure"));
     }
     #[test]
@@ -530,8 +632,6 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("cookie", format!("{COOKIE}={token}").parse().unwrap());
         assert!(expired.session(&headers).is_none());
-        headers.append("cookie", format!("{COOKIE}={token}").parse().unwrap());
-        assert!(cookie_token(&headers).is_none());
         let state = state();
         for _ in 0..LOGIN_ATTEMPTS {
             assert!(state.login_allowed("one-client"));

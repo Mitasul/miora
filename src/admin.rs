@@ -107,6 +107,10 @@ async fn handle_inner(state: &AppState, request: Request) -> Response<Body> {
             "set-cookie",
             HeaderValue::from_str(&state.admin.cookie("")).unwrap(),
         );
+        out.headers_mut().append(
+            "set-cookie",
+            HeaderValue::from_str(&state.admin.clear_legacy_cookie()).unwrap(),
+        );
         return out;
     }
     // Bound every mutation (including delegated plugin endpoints) before parsing.
@@ -266,6 +270,10 @@ async fn login(state: &AppState, request: Request) -> Response<Body> {
     out.headers_mut().insert(
         "set-cookie",
         HeaderValue::from_str(&state.admin.cookie(&token)).unwrap(),
+    );
+    out.headers_mut().append(
+        "set-cookie",
+        HeaderValue::from_str(&state.admin.clear_legacy_cookie()).unwrap(),
     );
     out
 }

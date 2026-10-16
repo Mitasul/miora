@@ -7,6 +7,13 @@ const errorBox = document.querySelector('#login-error');
 const password = document.querySelector('#password');
 const toggle = document.querySelector('#toggle-password');
 let submitting = false;
+function checkExistingSession() {
+  request('/session', { redirect: false }).then(session => {
+    if (session?.user) window.location.replace('/admin#overview');
+  }).catch(() => {});
+}
+checkExistingSession();
+window.addEventListener('pageshow', event => { if (event.persisted) checkExistingSession(); });
 toggle.addEventListener('click', () => {
   const visible = password.type === 'password';
   password.type = visible ? 'text' : 'password';
