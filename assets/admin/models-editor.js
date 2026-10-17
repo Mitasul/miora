@@ -102,6 +102,14 @@ export function matchingModelRows(rows, query) {
   return rows.map((row, index) => ({ row, index })).filter(({ row }) => !term || `${row.upstream} ${row.alias}`.toLowerCase().includes(term));
 }
 
+const PRESET_GROUPS = {
+  openai: ['gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex', 'gpt-5.2', 'gpt-4.1', 'gpt-4o', 'o3', 'o4-mini'],
+  claude: ['claude-opus-4-6', 'claude-sonnet-4-6', 'claude-haiku-4-5-20251001', 'claude-sonnet-4-5-20250929', 'claude-3-7-sonnet-20250219'],
+  gemini: ['gemini-3.1-pro-preview', 'gemini-3-flash-preview', 'gemini-2.5-pro', 'gemini-2.5-flash', 'gemini-2.0-flash'],
+  antigravity: ['claude-opus-4-6-thinking', 'claude-sonnet-4-6', 'claude-sonnet-4-5', 'gemini-3.1-pro-high', 'gemini-3-flash', 'gemini-2.5-pro'],
+  cn: ['deepseek-chat', 'deepseek-reasoner', 'qwen-max-latest', 'glm-4.5', 'kimi-k2-0711-preview'],
+};
+
 export function createModelsEditor(root, { models = [], pricing = {}, discover, testModel, onChange = () => {}, onPricingChange = onChange }) {
   let rows = modelsToRows(models);
   const modelPricing = createModelPricing(pricing);
@@ -110,15 +118,15 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
   let sequence = 0;
   let requestController;
   let destroyed = false;
+  let catalogVisible = false;
   let displayedRows = [];
-  root.innerHTML = `<div class="models-heading"><div><h3 id="models-title">模型与映射</h3></div><button type="button" class="button primary" data-model-action="discover">${icon('refresh')}获取模型</button></div>
+  root.innerHTML = `<div class="models-heading"><div><h3 id="models-title">模型与映射</h3></div><div class="table-actions"><button type="button" class="button primary" data-model-action="discover">${icon('refresh')}获取模型</button></div></div>
     <p class="models-message" role="status" aria-live="polite" hidden></p>
-    <div class="models-catalog"><div class="models-search search-field">${icon('search')}<input type="search" aria-label="搜索候选模型" placeholder="搜索模型名称或 ID" data-model-search></div><div class="models-catalog-actions"><span data-candidate-count></span><div><button class="button small ghost" type="button" data-model-action="select-filtered">全选</button><button class="button small ghost" type="button" data-model-action="clear-filtered">取消</button></div></div><div class="model-candidates" role="group" aria-label="候选模型"></div></div>
-    <div class="models-manual"><label for="manual-model-input">手动添加（支持 <code class="mono">上游模型=对外名称</code>）</label><div><input id="manual-model-input" autocomplete="off" spellcheck="false" placeholder="模型 ID 或 上游ID=对外别名"><button type="button" class="button" data-model-action="add">${icon('plus')}添加</button><button type="button" class="button ghost" data-model-action="strip-prefix">去除厂商前缀</button></div></div>
-    <div class="models-selected-heading"><h3>已选模型 <span class="badge purple" data-selected-count aria-live="polite"></span></h3><div class="table-actions">${testModel ? `<button type="button" class="button small primary" data-model-action="test-all">${icon('pulse')}批量测活</button><button type="button" class="button small text-danger" data-model-action="remove-failed" hidden>${icon('trash')}移除失败</button>` : ''}<button type="button" class="button small ghost" data-model-action="copy-all">${icon('copy')}复制全部</button><button type="button" class="button small ghost text-danger" data-model-action="clear-all">${icon('trash')}清空</button><span>上游模型 → 对外别名</span></div></div>
-    ${testModel ? `<details class="test-params-details"><summary>自定义测活参数（默认发 "hi" · 可自选温度与思考强度）</summary><div class="models-test-bar"><label class="test-param-item"><span>测试内容</span><input type="text" data-model-test-prompt value="hi" placeholder="hi"></label><label class="test-param-item"><span>温度 (Temp)</span><input type="number" data-model-test-temp step="0.1" min="0" max="2" placeholder="默认不传"></label><label class="test-param-item"><span>Top P</span><input type="number" data-model-test-top-p step="0.05" min="0" max="1" placeholder="默认不传"></label><label class="test-param-item"><span>最大 Token</span><input type="number" data-model-test-limit value="16" min="1" step="1" placeholder="16"></label><label class="test-param-item"><span>思考强度</span><select data-model-test-effort><option value="">默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label></div></details>` : ''}
+    <div class="models-catalog" hidden><div class="models-search search-field">${icon('search')}<input type="search" aria-label="搜索候选模型" placeholder="搜索模型名称或 ID" data-model-search></div><div class="models-catalog-actions"><span data-candidate-count></span><div><button class="button small ghost" type="button" data-model-action="select-filtered">全选</button><button class="button small ghost" type="button" data-model-action="clear-filtered">取消</button></div></div><div class="model-candidates" role="group" aria-label="候选模型"></div></div>
+    <div class="models-manual"><div class="models-manual-head"><label for="manual-model-input">手动添加（支持逗号/换行批量粘贴，或 <code class="mono">上游模型=对外名称</code>）</label><div class="models-presets"><span>常用预设：</span><button type="button" class="button small ghost" data-model-action="preset" data-preset="openai">+ GPT/Codex</button><button type="button" class="button small ghost" data-model-action="preset" data-preset="claude">+ Claude</button><button type="button" class="button small ghost" data-model-action="preset" data-preset="gemini">+ Gemini</button><button type="button" class="button small ghost" data-model-action="preset" data-preset="antigravity">+ 反重力</button><button type="button" class="button small ghost" data-model-action="preset" data-preset="cn">+ DeepSeek/国产</button></div></div><div><input id="manual-model-input" autocomplete="off" spellcheck="false" placeholder="模型 ID（多个用逗号分隔）或 上游ID=对外别名"><button type="button" class="button" data-model-action="add">${icon('plus')}添加</button><button type="button" class="button ghost" data-model-action="strip-prefix">去除厂商前缀</button></div></div>
+    <div class="models-selected-heading"><h3>已选模型 <span class="badge purple" data-selected-count aria-live="polite"></span></h3><div class="table-actions">${testModel ? `<button type="button" class="button small primary" data-model-action="test-all">${icon('pulse')}批量测活</button><button type="button" class="button small text-danger" data-model-action="remove-failed" hidden>${icon('trash')}移除失败</button>` : ''}<button type="button" class="button small ghost" data-model-action="copy-all">${icon('copy')}复制全部</button><button type="button" class="button small ghost text-danger" data-model-action="clear-all">${icon('trash')}清空</button></div></div>
     <div class="models-selected-search"><div class="search-field">${icon('search')}<input type="search" data-selected-search placeholder="搜索已选模型或别名" aria-label="搜索已选模型或别名"></div><button type="button" class="button small" data-model-action="clear-selected-filter" hidden>清除筛选</button></div>
-    <details class="model-batch-pricing"><summary>批量设置价格</summary><div class="model-price-fields">${PRICE_FIELDS.map(([key, label]) => `<label><span>${label}</span><input type="text" inputmode="decimal" autocomplete="off" data-batch-price-key="${key}" placeholder="保持原值" aria-label="批量设置${label}单价"></label>`).join('')}</div><div class="model-batch-actions"><span class="hint">只更新填写项；0 为免费。保存渠道后生效。</span><button type="button" class="button small" data-model-action="apply-prices"></button></div><p class="models-message" data-batch-price-message role="status" hidden></p></details>
+    <div class="models-tools-grid">${testModel ? `<details class="test-params-details"><summary>自定义测活参数（默认发 "hi"）</summary><div class="models-test-bar"><label class="test-param-item"><span>测试内容</span><input type="text" data-model-test-prompt value="hi" placeholder="hi"></label><label class="test-param-item"><span>温度 (Temp)</span><input type="number" data-model-test-temp step="0.1" min="0" max="2" placeholder="默认不传"></label><label class="test-param-item"><span>Top P</span><input type="number" data-model-test-top-p step="0.05" min="0" max="1" placeholder="默认不传"></label><label class="test-param-item"><span>最大 Token</span><input type="number" data-model-test-limit value="16" min="1" step="1" placeholder="16"></label><label class="test-param-item"><span>思考强度</span><select data-model-test-effort><option value="">默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label></div></details>` : ''}<details class="model-batch-pricing"><summary>批量设置价格</summary><div class="model-price-fields">${PRICE_FIELDS.map(([key, label]) => `<label><span>${label}</span><input type="text" inputmode="decimal" autocomplete="off" data-batch-price-key="${key}" placeholder="保持原值" aria-label="批量设置${label}单价"></label>`).join('')}</div><div class="model-batch-actions"><span class="hint">只更新填写项；0 为免费。保存渠道后生效。</span><button type="button" class="button small" data-model-action="apply-prices"></button></div><p class="models-message" data-batch-price-message role="status" hidden></p></details></div>
     ${PRICE_FIELDS.some(([key]) => pricing[key] != null) ? '<p class="hint">已有渠道默认价格已载入各模型，修改仅对当前模型生效。</p>' : ''}<div class="model-selected-list"></div>`;
   const search = root.querySelector('[data-model-search]');
   const selectedSearch = root.querySelector('[data-selected-search]');
@@ -136,6 +144,7 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
     message.setAttribute('role', error ? 'alert' : 'status');
   }
   function renderCandidates() {
+    root.querySelector('.models-catalog').hidden = !catalogVisible;
     const visible = visibleCandidates();
     const selected = new Set(rows.map(row => row.upstream));
     root.querySelector('[data-candidate-count]').textContent = `${visible.length} / ${candidates.length} 个候选`;
@@ -270,9 +279,13 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
       const result = await discover(requestController.signal);
       if (destroyed || current !== sequence) return;
       candidates = mergeModelCandidates(candidates, result.models);
+      catalogVisible = true;
       const sources = { upstream: '上游服务', plugin: '渠道插件', catalog: '内置目录' };
       const discoveredIds = result.models.map(m => typeof m === 'string' ? m : m?.id).filter(Boolean);
-      if (!rows.length && discoveredIds.length) {
+      if (result.fallback_reason) {
+        showMessage(`上游未开放模型列表接口，已为您载入 ${result.models.length} 个内置常用候选模型，请勾选需要的模型。`);
+        renderCandidates();
+      } else if (!rows.length && discoveredIds.length) {
         rows = selectModelCandidates(rows, discoveredIds, true);
         showMessage(`已从${sources[result.source] || '服务端'}获取并自动全选 ${discoveredIds.length} 个模型。`);
         render();
@@ -320,6 +333,10 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
     const action = button.dataset.modelAction;
     if (action === 'discover') fetchModels();
     else if (action === 'add') addManual(manual.value);
+    else if (action === 'preset') {
+      const preset = PRESET_GROUPS[button.dataset.preset] || [];
+      if (preset.length) addManual(preset.join(', '));
+    }
     else if (action === 'strip-prefix') {
       let updated = 0;
       for (const row of rows) {
@@ -372,6 +389,7 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
     },
     resetCandidates() {
       sequence++; requestController?.abort();
+      catalogVisible = false;
       candidates = mergeModelCandidates([], rows.map(row => row.upstream)); search.value = '';
       discoverButton.disabled = false; discoverButton.innerHTML = `${icon('refresh')}获取模型`; root.querySelector('.models-catalog').removeAttribute('aria-busy');
       showMessage('渠道类型已更改，已选模型和别名均已保留。请确认模型兼容性，或重新获取目录。'); renderCandidates();

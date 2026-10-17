@@ -474,26 +474,22 @@ async fn channel_models(state: &AppState, request: Request) -> ApiResult {
     if engine == "codex" {
         return Ok(json!({"models":codex_catalog_models(),"source":"catalog"}));
     }
-    if engine == "azure" {
-        return Err(error(
-            StatusCode::BAD_REQUEST,
-            "model_discovery_unsupported",
-            "Azure has no compatible model catalog here; enter deployment names manually",
-        ));
+    let base_url = channel
+        .get("base_url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
+    if matches!(engine.as_str(), "azure" | "aws" | "vertex") {
+        let catalog = fallback_catalog_models(&engine, &base_url);
+        if !catalog.is_empty() {
+            return Ok(json!({"models":catalog,"source":"catalog"}));
+        }
     }
     channel["engine"] = json!(engine);
     let proxy = channel
         .pointer("/preferences/proxy")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    let raw_key = crate::config::discovery::first_provider_key(channel.get("api"));
-    if (matches!(engine.as_str(), "codex" | "claude" | "antigravity") && raw_key.contains(','))
-        || raw_key.trim_start().starts_with('{')
-    {
-        if let Ok(auth) = state.codex_oauth.resolve(&raw_key, proxy.as_deref()).await {
-            channel["api"] = json!(auth.bearer);
-        }
-    }
     let client = state
         .upstream_client(proxy.as_deref(), true, None)
         .await
@@ -504,12 +500,54 @@ async fn channel_models(state: &AppState, request: Request) -> ApiResult {
                 "Could not initialize the model discovery HTTP client",
             )
         })?;
-    let ids = crate::config::discovery::discover_provider_models(&client, &channel)
-        .await
-        .map_err(|message| error(StatusCode::BAD_GATEWAY, "model_discovery_failed", &message))?;
-    Ok(
-        json!({"models":ids.into_iter().map(|id| json!({"id":id})).collect::<Vec<_>>(),"source":"upstream"}),
-    )
+    let mut candidate_keys = crate::config::discovery::provider_keys(channel.get("api"));
+    if candidate_keys.is_empty() {
+        candidate_keys.push(String::new());
+    }
+    let mut last_error = String::new();
+    for raw_key in candidate_keys.into_iter().take(3) {
+        let mut attempt = channel.clone();
+        if raw_key.starts_with("core-oauth:")
+            || raw_key.trim_start().starts_with('{')
+            || (matches!(engine.as_str(), "codex" | "claude" | "antigravity")
+                && raw_key.contains(','))
+        {
+            if let Ok(auth) = state.codex_oauth.resolve(&raw_key, proxy.as_deref()).await {
+                attempt["api"] = json!(auth.bearer);
+            } else {
+                attempt["api"] = json!(raw_key);
+            }
+        } else {
+            attempt["api"] = json!(raw_key);
+        }
+        match crate::config::discovery::discover_provider_models(&client, &attempt).await {
+            Ok(ids) if !ids.is_empty() => {
+                return Ok(json!({
+                    "models": ids.into_iter().map(|id| json!({"id":id})).collect::<Vec<_>>(),
+                    "source": "upstream"
+                }));
+            }
+            Ok(_) => {
+                last_error = "Upstream returned an empty model list".into();
+            }
+            Err(message) => {
+                last_error = message;
+            }
+        }
+    }
+    let fallback = fallback_catalog_models(&engine, &base_url);
+    if !fallback.is_empty() {
+        return Ok(json!({
+            "models": fallback,
+            "source": "catalog",
+            "fallback_reason": last_error
+        }));
+    }
+    Err(error(
+        StatusCode::BAD_GATEWAY,
+        "model_discovery_failed",
+        &last_error,
+    ))
 }
 
 fn discovery_channel(saved: Value, overrides: DiscoveryChannel) -> Value {
@@ -566,6 +604,121 @@ fn codex_catalog_models() -> Vec<Value> {
         .expect("bundled Codex model array")
         .iter()
         .map(|model| json!({"id":model["slug"],"name":model["display_name"]}))
+        .collect()
+}
+
+fn fallback_catalog_models(engine: &str, base_url: &str) -> Vec<Value> {
+    let host = base_url.to_ascii_lowercase();
+    let list: &[(&str, &str)] = match engine {
+        "claude" | "vertex-claude" => &[
+            ("claude-opus-4-6", "Claude Opus 4.6"),
+            ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+            ("claude-haiku-4-5-20251001", "Claude Haiku 4.5"),
+            ("claude-opus-4-5-20251101", "Claude Opus 4.5"),
+            ("claude-sonnet-4-5-20250929", "Claude Sonnet 4.5"),
+            ("claude-sonnet-4-20250514", "Claude Sonnet 4"),
+            ("claude-3-7-sonnet-20250219", "Claude 3.7 Sonnet"),
+            ("claude-3-5-sonnet-20241022", "Claude 3.5 Sonnet"),
+            ("claude-3-5-haiku-20241022", "Claude 3.5 Haiku"),
+        ],
+        "antigravity" => &[
+            ("claude-opus-4-6-thinking", "Claude Opus 4.6 Thinking"),
+            ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+            ("claude-sonnet-4-5", "Claude Sonnet 4.5"),
+            ("claude-sonnet-4-5-thinking", "Claude Sonnet 4.5 Thinking"),
+            ("gemini-3.1-pro-high", "Gemini 3.1 Pro High"),
+            ("gemini-3.1-pro-low", "Gemini 3.1 Pro Low"),
+            ("gemini-3-flash", "Gemini 3 Flash"),
+            ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("gpt-oss-120b-medium", "GPT-OSS 120B Medium"),
+        ],
+        "gemini" | "vertex" | "vertex-gemini" => &[
+            ("gemini-3.1-pro-preview", "Gemini 3.1 Pro Preview"),
+            ("gemini-3-flash-preview", "Gemini 3 Flash Preview"),
+            ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+            ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ("gemini-2.5-flash-lite", "Gemini 2.5 Flash Lite"),
+            ("gemini-2.0-flash", "Gemini 2.0 Flash"),
+        ],
+        "aws" => &[
+            ("anthropic.claude-opus-4-6-v1:0", "Bedrock Claude Opus 4.6"),
+            ("anthropic.claude-sonnet-4-6-v1:0", "Bedrock Claude Sonnet 4.6"),
+            ("anthropic.claude-3-7-sonnet-20250219-v1:0", "Bedrock Claude 3.7 Sonnet"),
+            ("anthropic.claude-3-5-sonnet-20241022-v2:0", "Bedrock Claude 3.5 Sonnet v2"),
+            ("us.anthropic.claude-sonnet-4-20250514-v1:0", "Bedrock US Claude Sonnet 4"),
+        ],
+        "cohere" => &[
+            ("command-a-03-2025", "Command A"),
+            ("command-r-plus-08-2024", "Command R+"),
+            ("command-r-08-2024", "Command R"),
+            ("rerank-v3.5", "Rerank v3.5"),
+        ],
+        "cloudflare" => &[
+            ("@cf/meta/llama-3.3-70b-instruct-fp8-fast", "Llama 3.3 70B Instruct"),
+            ("@cf/deepseek-ai/deepseek-r1-distill-qwen-32b", "DeepSeek R1 Distill Qwen 32B"),
+            ("@cf/qwen/qwen2.5-coder-32b-instruct", "Qwen 2.5 Coder 32B"),
+        ],
+        "gpt" | "azure" | "openrouter" => {
+            if host.contains("deepseek") {
+                &[
+                    ("deepseek-chat", "DeepSeek V3"),
+                    ("deepseek-reasoner", "DeepSeek R1"),
+                ]
+            } else if host.contains("x.ai") {
+                &[
+                    ("grok-4", "Grok 4"),
+                    ("grok-3", "Grok 3"),
+                    ("grok-3-mini", "Grok 3 Mini"),
+                ]
+            } else if host.contains("dashscope") || host.contains("aliyun") {
+                &[
+                    ("qwen-max-latest", "Qwen Max"),
+                    ("qwen-plus-latest", "Qwen Plus"),
+                    ("qwen-turbo-latest", "Qwen Turbo"),
+                    ("qwq-plus", "QwQ Plus"),
+                    ("deepseek-v3", "DeepSeek V3"),
+                    ("deepseek-r1", "DeepSeek R1"),
+                ]
+            } else if host.contains("bigmodel.cn") {
+                &[
+                    ("glm-4.5", "GLM-4.5"),
+                    ("glm-4-plus", "GLM-4 Plus"),
+                    ("glm-4-air", "GLM-4 Air"),
+                    ("glm-4-flash", "GLM-4 Flash"),
+                ]
+            } else if host.contains("moonshot") {
+                &[
+                    ("kimi-k2-0711-preview", "Kimi K2"),
+                    ("moonshot-v1-auto", "Moonshot v1 Auto"),
+                ]
+            } else {
+                &[
+                    ("gpt-5.4", "GPT-5.4"),
+                    ("gpt-5.4-mini", "GPT-5.4 Mini"),
+                    ("gpt-5.3-codex", "GPT-5.3 Codex"),
+                    ("gpt-5.2", "GPT-5.2"),
+                    ("gpt-5", "GPT-5"),
+                    ("gpt-5-mini", "GPT-5 Mini"),
+                    ("gpt-4.1", "GPT-4.1"),
+                    ("gpt-4.1-mini", "GPT-4.1 Mini"),
+                    ("gpt-4o", "GPT-4o"),
+                    ("gpt-4o-mini", "GPT-4o Mini"),
+                    ("o3", "o3"),
+                    ("o4-mini", "o4-mini"),
+                    ("claude-opus-4-6", "Claude Opus 4.6"),
+                    ("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                    ("gemini-2.5-pro", "Gemini 2.5 Pro"),
+                    ("gemini-2.5-flash", "Gemini 2.5 Flash"),
+                    ("deepseek-chat", "DeepSeek V3"),
+                    ("deepseek-reasoner", "DeepSeek R1"),
+                ]
+            }
+        }
+        _ => &[],
+    };
+    list.iter()
+        .map(|(id, name)| json!({"id": id, "name": name}))
         .collect()
 }
 

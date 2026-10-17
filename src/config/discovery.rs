@@ -256,16 +256,33 @@ fn gemini_models_url(base_url: &str, api_key: &str) -> Result<Url, String> {
 }
 
 pub(crate) fn first_provider_key(value: Option<&Value>) -> String {
+    provider_keys(value).into_iter().next().unwrap_or_default()
+}
+
+pub(crate) fn provider_keys(value: Option<&Value>) -> Vec<String> {
     match value {
-        Some(Value::String(value)) => value.trim().to_owned(),
+        Some(Value::String(value)) => value
+            .lines()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
         Some(Value::Array(values)) => values
             .iter()
-            .find_map(Value::as_str)
-            .unwrap_or_default()
-            .trim()
-            .to_owned(),
-        Some(value) => scalar_string(value).trim().to_owned(),
-        None => String::new(),
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+            .collect(),
+        Some(value) => {
+            let single = scalar_string(value).trim().to_owned();
+            if single.is_empty() {
+                Vec::new()
+            } else {
+                vec![single]
+            }
+        }
+        None => Vec::new(),
     }
 }
 
@@ -291,7 +308,14 @@ pub(crate) fn provider_models_url(base_url: &str) -> Result<Url, String> {
     if path.ends_with("/models") {
         return Ok(url);
     }
-    if path.ends_with("/v1") {
+    if path.ends_with("/v1")
+        || path.ends_with("/v2")
+        || path.ends_with("/v3")
+        || path.ends_with("/v4")
+        || path.ends_with("/v1beta")
+        || path.ends_with("/v1alpha")
+        || path.ends_with("/openai")
+    {
         path.push_str("/models");
     } else {
         path.push_str("/v1/models");
@@ -312,8 +336,15 @@ pub(crate) fn discovered_model_ids(payload: &Value) -> Vec<String> {
     }
     let items = payload
         .get("data")
-        .or_else(|| payload.get("models"))
         .and_then(Value::as_array)
+        .or_else(|| payload.get("models").and_then(Value::as_array))
+        .or_else(|| {
+            payload
+                .pointer("/data/models")
+                .or_else(|| payload.pointer("/result/models"))
+                .or_else(|| payload.get("result"))
+                .and_then(Value::as_array)
+        })
         .or_else(|| payload.as_array())
         .into_iter()
         .flatten();
@@ -321,6 +352,9 @@ pub(crate) fn discovered_model_ids(payload: &Value) -> Vec<String> {
         let value = item
             .as_str()
             .or_else(|| item.get("id").and_then(Value::as_str))
+            .or_else(|| item.get("slug").and_then(Value::as_str))
+            .or_else(|| item.get("model").and_then(Value::as_str))
+            .or_else(|| item.get("modelId").and_then(Value::as_str))
             .or_else(|| item.get("name").and_then(Value::as_str))
             .unwrap_or_default()
             .trim_start_matches("models/")
