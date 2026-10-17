@@ -103,7 +103,7 @@ export async function mountKeys(root, { signal }) {
     if (signal.aborted) return;
     data = keys; channels = catalog.channels;
     knownGroups = [...new Set(['default', ...(data.groups || []), ...data.api_keys.flatMap(key => key.groups), ...channels.flatMap(channel => channel.groups || ['default'])])].sort();
-    root.innerHTML = `<div class="page-heading"><h1>API Key</h1><div class="page-actions"><button class="button" type="button" data-key-action="refresh">${icon('refresh')}刷新</button>${data.writable ? `<button class="button" type="button" data-key-action="manage-groups">${icon('shield')}分组管理</button><button class="button primary" type="button" data-key-action="create">${icon('plus')}创建密钥</button>` : ''}</div></div>${data.writable ? '' : notice('远程配置只读', 'warning')}<section class="card"><div class="group-tabs" role="group" aria-label="密钥分组">${['', ...knownGroups].map(value => `<button class="button small" type="button" data-key-group="${esc(value)}" aria-pressed="${value === group}">${esc(value || '全部分组')}<span class="group-count">${fmt(value ? data.api_keys.filter(key => key.groups.includes(value)).length : data.api_keys.length)}</span></button>`).join('')}${data.writable ? `<div class="group-quick-add"><input id="quick-group-input" type="text" placeholder="+ 新建分组" aria-label="快速新建分组"><button class="button small" type="button" data-key-action="quick-add-group">${icon('plus')}添加</button>${group && group !== 'default' && (data.groups || []).includes(group) ? `<button class="button small text-danger" type="button" data-key-action="remove-group" data-group-name="${esc(group)}">${icon('trash')}删除</button>` : ''}</div>` : ''}</div><div class="toolbar"><div class="search-field">${icon('search')}<input id="key-search" type="search" placeholder="搜索名称、分组或模型" aria-label="搜索密钥" value="${esc(query)}"></div>${select('key_status', '状态', [{ value: '', label: '全部状态' }, { value: 'enabled', label: '已启用' }, { value: 'disabled', label: '已停用' }], status)}</div><div id="key-list"></div></section>`;
+    root.innerHTML = `<div class="page-heading"><h1>API Key</h1><div class="page-actions"><button class="button" type="button" data-key-action="refresh">${icon('refresh')}刷新</button>${data.writable ? `<button class="button" type="button" data-key-action="manage-groups">${icon('shield')}分组管理</button><button class="button" type="button" data-key-action="quick-create">${icon('key')}一键秒建</button><button class="button primary" type="button" data-key-action="create">${icon('plus')}创建密钥</button>` : ''}</div></div>${data.writable ? '' : notice('远程配置只读', 'warning')}<section class="card"><div class="group-tabs" role="group" aria-label="密钥分组">${['', ...knownGroups].map(value => `<button class="button small" type="button" data-key-group="${esc(value)}" aria-pressed="${value === group}">${esc(value || '全部分组')}<span class="group-count">${fmt(value ? data.api_keys.filter(key => key.groups.includes(value)).length : data.api_keys.length)}</span></button>`).join('')}${data.writable ? `<div class="group-quick-add"><input id="quick-group-input" type="text" placeholder="+ 新建分组" aria-label="快速新建分组"><button class="button small" type="button" data-key-action="quick-add-group">${icon('plus')}添加</button>${group && group !== 'default' && (data.groups || []).includes(group) ? `<button class="button small text-danger" type="button" data-key-action="remove-group" data-group-name="${esc(group)}">${icon('trash')}删除</button>` : ''}</div>` : ''}</div><div class="toolbar"><div class="search-field">${icon('search')}<input id="key-search" type="search" placeholder="搜索名称、分组或模型" aria-label="搜索密钥" value="${esc(query)}"></div>${select('key_status', '状态', [{ value: '', label: '全部状态' }, { value: 'enabled', label: '已启用' }, { value: 'disabled', label: '已停用' }], status)}</div><div id="key-list"></div></section>`;
     root.querySelector('#key-search').addEventListener('input', event => { query = event.target.value; draw(); }, { signal });
     root.querySelector('#f-key_status').addEventListener('change', event => { status = event.target.value; draw(); }, { signal });
     root.querySelector('#quick-group-input')?.addEventListener('keydown', event => {
@@ -132,11 +132,8 @@ export async function mountKeys(root, { signal }) {
         + field('models', '授权模型（每行一个）', originalModels, { type: 'textarea', required: true, help: 'all 或 渠道名/模型' })
         + '<button class="button small" type="button" id="key-load-models">载入分组模型</button>'
         + field('rate_limit', '请求速率', originalRate, { placeholder: '例如 60/min；留空继承全局' })
-        + checkbox('enabled', '启用此密钥', key?.enabled ?? true)
-        + `<div id="key-admin-confirm" hidden>${checkbox('confirm_admin', '确认授予管理员 API 权限')}</div>`,
+        + checkbox('enabled', '启用此密钥', key?.enabled ?? true),
       onMount: form => {
-        const roleChanged = () => { const elevated = form.elements.role.value === 'admin' && key?.role !== 'admin'; form.querySelector('#key-admin-confirm').hidden = !elevated; form.elements.confirm_admin.required = elevated; };
-        form.elements.role.addEventListener('change', roleChanged); roleChanged();
         form.querySelector('#key-load-models').addEventListener('click', () => {
           const models = groupModels(channels, parseGroups(form.elements.groups.value));
           if (!models.length) { toast('所选分组暂无模型，请先给渠道设置相同分组'); return; }
@@ -187,7 +184,6 @@ export async function mountKeys(root, { signal }) {
         const groups = parseGroups(form.elements.groups.value);
         if (!groups.length) throw new Error('请至少填写一个分组');
         const role = form.elements.role.value;
-        if (role === 'admin' && key?.role !== 'admin' && !form.elements.confirm_admin.checked) throw new Error('请确认管理员权限');
         const body = { revision: data.revision, ...(key ? { id: key.id } : {}), name: form.elements.name.value.trim(), groups, role, enabled: form.elements.enabled.checked };
         const modelsText = form.elements.models.value.trim();
         if (!key || modelsText !== originalModels) body.models = [...new Set(modelsText.split(/\r?\n/).map(value => value.trim()).filter(Boolean))];
@@ -223,6 +219,21 @@ export async function mountKeys(root, { signal }) {
     if (!button || button.disabled) return;
     const action = button.dataset.keyAction, key = data.api_keys.find(item => item.id === button.dataset.keyId);
     if (action === 'create') return edit();
+    if (action === 'quick-create') {
+      button.disabled = true;
+      try {
+        const targetGroup = group || 'default';
+        const result = await api.post('/api-keys', { revision: data.revision, name: `Key-${data.api_keys.length + 1}`, groups: [targetGroup], role: 'user', enabled: true, models: ['all'] });
+        const secret = result.api_key; delete result.api_key;
+        try { await navigator.clipboard.writeText(secret); toast('已一键生成密钥并复制到剪贴板'); } catch { toast('密钥已生成'); }
+        await load();
+        setTimeout(() => showSecret(secret), 0);
+      } catch (err) {
+        toast(err.message);
+        button.disabled = false;
+      }
+      return;
+    }
     if (action === 'manage-groups' || action === 'create-group') return openGroupManager({ onChanged: load });
     if (action === 'quick-add-group') {
       const inputEl = root.querySelector('#quick-group-input');
@@ -250,11 +261,22 @@ export async function mountKeys(root, { signal }) {
     }
     if (action === 'edit') return edit(key);
     if (action === 'refresh') { button.disabled = true; try { await load(); } catch (error) { toast(error.message); button.disabled = false; } return; }
-    if (action === 'toggle' || action === 'revoke') {
-      confirmAction({ title: action === 'revoke' ? '吊销密钥' : key.enabled ? '停用密钥' : '启用密钥', message: action === 'revoke' ? `吊销“${key.name || key.id}”？此密钥将无法恢复。` : `${key.enabled ? '停用' : '启用'}“${key.name || key.id}”？配置与已有使用记录会保留。`, label: '确认', action: async () => {
-        if (action === 'revoke') await api.remove('/api-keys', { revision: data.revision, id: key.id });
-        else await api.patch('/api-keys', { revision: data.revision, id: key.id, enabled: !key.enabled });
-        await load(); toast('密钥已更新');
+    if (action === 'toggle') {
+      button.disabled = true;
+      try {
+        await api.patch('/api-keys', { revision: data.revision, id: key.id, enabled: !key.enabled });
+        await load();
+        toast(key.enabled ? '密钥已停用' : '密钥已启用');
+      } catch (err) {
+        toast(err.message);
+        button.disabled = false;
+      }
+      return;
+    }
+    if (action === 'revoke') {
+      confirmAction({ title: '吊销密钥', message: `吊销“${key.name || key.id}”？此密钥将无法恢复。`, label: '确认', action: async () => {
+        await api.remove('/api-keys', { revision: data.revision, id: key.id });
+        await load(); toast('密钥已吊销');
       } });
     }
   }, { signal });

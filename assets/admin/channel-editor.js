@@ -172,9 +172,11 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
   }
   function activateTab(name, focus = false) {
     form.querySelectorAll('[data-channel-tab]').forEach(tab => { const active = tab.dataset.channelTab === name; tab.setAttribute('aria-selected', String(active)); tab.tabIndex = active ? 0 : -1; if (active && focus) tab.focus(); });
-    form.querySelectorAll('[data-channel-panel]').forEach(panel => { panel.hidden = panel.dataset.channelPanel !== name; });
-    form.querySelector('#channel-preview').hidden = name === 'models';
-    if (name !== 'models') updatePreviewModels();
+    form.querySelectorAll('[data-channel-panel]').forEach(panel => {
+      panel.hidden = name === 'basic' ? panel.dataset.channelPanel === 'parameters' : panel.dataset.channelPanel !== name;
+    });
+    form.querySelector('#channel-preview').hidden = name !== 'parameters';
+    if (name === 'parameters') updatePreviewModels();
     form.querySelector('.dialog-body').scrollTop = 0;
   }
   async function refreshCapabilities() {
@@ -264,6 +266,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       parametersEditor = createParametersEditor(form.querySelector('#channel-parameters'), { policy: config.preferences?.parameter_policy, onChange: markStale });
       form.elements.protocol_mode.addEventListener('change', () => { markStale(); refreshCapabilities(); });
       form.elements.base_url.addEventListener('input', () => { urlEdited = true; markStale(); });
+      form.elements.api.addEventListener('input', () => { if (form.elements.api.value.trim()) selectedCoreAccounts = null; markStale(); });
       const updateType = () => {
         const nativeSupported = ['builtin:gpt', 'builtin:codex', 'builtin:antigravity', 'builtin:openrouter', 'builtin:claude', 'builtin:gemini', 'builtin:vertex', 'builtin:vertex-gemini'].includes(form.elements.channel_type.value);
         form.elements.protocol_mode.querySelector('option[value="native"]').disabled = !nativeSupported;
@@ -364,6 +367,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         }
         if (statusEl) statusEl.textContent = '账号凭据已就绪。';
         if (oauthFlow) oauthFlow.hidden = true;
+        if (!modelsEditor?.snapshot().length) modelsEditor?.discover?.();
         markStale();
       }
       form.querySelector('[data-channel-oauth-copy]')?.addEventListener('click', async () => {

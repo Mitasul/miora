@@ -45,7 +45,7 @@ const mini = (label, action, index, name = '', danger = false) => `<button class
 const head = (actions = '') => `<div class="page-heading"><h1>${routes[currentRoute][0]}</h1><div class="page-actions">${button('刷新', 'refresh', 'refresh')}${actions}</div></div>`;
 const table = (heads, rows) => `<div class="table-scroll" tabindex="0" role="region" aria-label="可横向滚动的数据表"><table><thead><tr>${heads.map(h => `<th scope="col">${h}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>`;
 const countFooter = (count, label = '条记录') => `<div class="table-footer">共 ${fmt(count)} ${label}</div>`;
-const tags = (items = [], limit = 4) => `<div class="tags">${items.slice(0, limit).map(item => badge(typeof item === 'string' ? item : item.id || JSON.stringify(item))).join('')}${items.length > limit ? badge(`+${items.length - limit}`) : ''}</div>`;
+const tags = (items = [], limit = 4) => `<div class="tags">${items.map((item, idx) => { const text = typeof item === 'string' ? item : item.id || JSON.stringify(item); return `<span class="tag-copy-item"${idx >= limit ? ' hidden data-extra-tag' : ''} data-copy-text="${esc(text)}" title="点击复制">${badge(text)}</span>`; }).join('')}${items.length > limit ? `<button type="button" class="badge tag-expand-btn" data-action="expand-tags">+${items.length - limit}</button>` : ''}</div>`;
 const read = path => api.get(path, { signal: controller.signal });
 const scalar = value => value === null || value === undefined ? '—' : typeof value === 'object' ? JSON.stringify(value) : String(value);
 const metric = (label, value, note, name) => `<article class="metric-card"><div class="metric-head"><span>${esc(label)}</span><span class="metric-icon">${icon(name)}</span></div><div class="metric-value">${esc(value)}</div>${note ? `<div class="metric-note">${esc(note)}</div>` : ''}</article>`;
@@ -134,18 +134,18 @@ async function overview() {
 }
 
 function channelRows(channels, writable) {
-  return channels.map((channel, index) => `<tr class="channel-row" data-engine="${esc(channel.channel_plugin || channel.engine || '默认')}" data-search="${esc(`${channel.provider} ${channel.base_url} ${channel.models.join(' ')}`.toLowerCase())}"><td class="channel-cell-main"><div class="channel-head-row">${writable && !channel.temporary ? `<input type="checkbox" class="channel-select-box" data-channel-select="${index}" aria-label="选择 ${esc(channel.provider)}">` : ''}<div class="table-name"><span class="row-icon ai-brand-mark">${aiIcon(channelBrand(channel), 'channels')}</span><span><strong>${esc(channel.provider)}</strong><span class="subline" title="${esc(channel.base_url)}">${esc(channel.base_url || '由渠道插件提供连接')}</span><span class="tags channel-groups">${(channel.groups || ['default']).map(group => badge(group)).join('')}</span></span></div></div></td><td class="channel-cell-type">${badge(channel.channel_plugin || channel.engine || '默认', channel.channel_plugin ? 'purple' : '')}${channel.enabled === false ? badge('已停用', 'orange') : badge('已启用', 'green')}${channel.temporary ? badge('临时', 'orange') : ''}</td><td class="channel-cell-models">${tags(channel.models, 5)}</td><td class="channel-cell-keys"><span class="channel-key-count">${fmt(channel.api_key_count)}</span></td><td class="channel-cell-balance" data-channel-balance-index="${index}">${balanceSummary(state.balances[channel.provider])}</td><td class="channel-cell-actions"><div class="table-actions">${mini('余额', 'channel-balance', index, 'chart')}${mini('测试', 'test-channel', index, 'pulse')}${writable && !channel.temporary ? mini('账号', 'channel-accounts', index, 'key') : ''}${mini(writable && !channel.temporary ? '编辑' : '查看', 'edit-channel', index, writable && !channel.temporary ? 'edit' : 'eye')}${writable && !channel.temporary ? mini(channel.enabled === false ? '启用' : '停用', 'toggle-channel', index, channel.enabled === false ? 'play' : 'pause') : ''}${mini('统计', 'channel-usage', index, 'chart')}${writable && !channel.temporary ? mini('复制', 'copy-channel', index, 'copy') + mini('删除', 'delete-channel', index, 'trash', true) : ''}</div></td></tr>`).join('');
+  return channels.map((channel, index) => `<tr class="channel-row" data-engine="${esc(channel.channel_plugin || channel.engine || '默认')}" data-search="${esc(`${channel.provider} ${channel.base_url} ${channel.models.join(' ')}`.toLowerCase())}"><td class="channel-cell-main"><div class="channel-head-row">${writable && !channel.temporary ? `<input type="checkbox" class="channel-select-box" data-channel-select="${index}" aria-label="选择 ${esc(channel.provider)}">` : ''}<div class="table-name"><span class="row-icon ai-brand-mark">${aiIcon(channelBrand(channel), 'channels')}</span><span><strong>${esc(channel.provider)}</strong><span class="subline" title="${esc(channel.base_url)}">${esc(channel.base_url || '由渠道插件提供连接')}</span><span class="tags channel-groups">${(channel.groups || ['default']).map(group => badge(group)).join('')}</span></span></div></div></td><td class="channel-cell-type">${badge(channel.channel_plugin || channel.engine || '默认', channel.channel_plugin ? 'purple' : '')}${channel.enabled === false ? badge('已停用', 'orange') : badge('已启用', 'green')}${channel.temporary ? badge('临时', 'orange') : ''}</td><td class="channel-cell-models">${tags(channel.models, 5)}</td><td class="channel-cell-keys">${writable && !channel.temporary ? `<button type="button" class="button small ghost" data-action="channel-accounts" data-index="${index}" title="管理账号池">${icon('key')}<span class="channel-key-count">${fmt(channel.api_key_count)}</span></button>` : `<span class="channel-key-count">${fmt(channel.api_key_count)}</span>`}</td><td class="channel-cell-balance" data-channel-balance-index="${index}" data-action="quick-balance" data-index="${index}" title="点击直接刷新余额">${balanceSummary(state.balances[channel.provider])}</td><td class="channel-cell-actions"><div class="table-actions">${mini('余额', 'channel-balance', index, 'chart')}${mini('测试', 'test-channel', index, 'pulse')}${writable && !channel.temporary ? mini('账号', 'channel-accounts', index, 'key') : ''}${mini(writable && !channel.temporary ? '编辑' : '查看', 'edit-channel', index, writable && !channel.temporary ? 'edit' : 'eye')}${writable && !channel.temporary ? mini(channel.enabled === false ? '启用' : '停用', 'toggle-channel', index, channel.enabled === false ? 'play' : 'pause') : ''}${mini('统计', 'channel-usage', index, 'chart')}${writable && !channel.temporary ? mini('复制', 'copy-channel', index, 'copy') + mini('删除', 'delete-channel', index, 'trash', true) : ''}</div></td></tr>`).join('');
 }
 async function channels() {
-  const data = await read('/channels'); state = { channels: data };
-  const balances = await api.get('/channels/balances').catch(error => ({ error }));
-  state.balances = balances.balances || {};
-  state.balanceError = balances.error;
+  const [data, balances] = await Promise.all([read('/channels'), api.get('/channels/balances').catch(error => ({ error }))]);
+  state = { channels: data, balances: balances.balances || {}, balanceError: balances.error };
   const list = data.channels;
   const filters = new URLSearchParams(window.location.hash.split('?')[1] || '');
+  const activeGroup = filters.get('group') || '';
   const engines = [...new Set(list.map(channel => channel.channel_plugin || channel.engine || '默认'))].sort();
   const groups = [...new Set(['default', ...(data.groups || []), ...list.flatMap(channel => channel.groups || ['default'])])].sort();
-  return head((list.length ? button('批量测试模型', 'batch-test-channels', 'pulse') : '') + (data.writable ? button('添加渠道', 'create-channel', 'plus', true) : '')) + (data.writable ? '' : notice('当前配置源只读。', 'warning')) + (state.balanceError ? notice('无法读取已保存余额：' + state.balanceError.message, 'warning') : '') + `<section class="card channels-card">${data.writable ? `<div class="toolbar channels-batch-bar"><button class="button small" data-action="select-channels">选择可见</button><button class="button small" data-action="enable-channels">启用选中</button><button class="button small" data-action="disable-channels">停用选中</button><button class="button small" data-action="group-channels">批量设分组</button><button class="button small" data-action="batch-test-channels">${icon('pulse')}测试选中渠道</button><button class="button small" data-action="manage-groups">${icon('plus')}分组管理</button></div>` : ''}<div class="toolbar channels-filter-bar"><div class="search-field">${icon('search')}<input id="channel-search" type="search" value="${esc(filters.get('q') || '')}" placeholder="搜索渠道、地址或模型…" aria-label="搜索渠道、地址或模型"></div>${select('channel_type_filter', '接入方式', [{ value: '', label: '全部接入方式' }, ...engines.map(engine => ({ value: engine, label: engine }))], filters.get('type') || '')}${select('channel_group_filter', '分组', [{ value: '', label: '全部分组' }, ...groups.map(group => ({ value: group, label: group }))], filters.get('group') || '')}<button class="button small" type="button" id="clear-channel-filters">清除筛选</button></div>${list.length ? table(['渠道名称 / 上游地址', '接入方式', '模型与映射', '账号数', '余额 / 套餐', '操作'], channelRows(list, data.writable)) : empty('还没有配置渠道', data.writable ? '点击右上角「添加渠道」开始配置。' : '当前配置源中没有渠道。', 'channels')}<div id="search-empty" hidden>${empty('没有匹配的渠道', '尝试其他渠道名称或模型关键词。', 'search')}</div><div class="table-footer" id="channel-filter-count" role="status" aria-live="polite"></div></section>`;
+  const groupPills = list.length ? `<div class="group-tabs" role="group" aria-label="按分组快速筛选渠道">${['', ...groups].map(g => `<button class="button small" type="button" data-action="filter-channel-group" data-channel-group-pill="${esc(g)}" aria-pressed="${g === activeGroup}">${esc(g || '全部分组')}<span class="group-count">${fmt(g ? list.filter(ch => (ch.groups || ['default']).includes(g)).length : list.length)}</span></button>`).join('')}</div>` : '';
+  return head((list.length ? button('批量测试模型', 'batch-test-channels', 'pulse') : '') + (data.writable ? button('添加渠道', 'create-channel', 'plus', true) : '')) + (data.writable ? '' : notice('当前配置源只读。', 'warning')) + (state.balanceError ? notice('无法读取已保存余额：' + state.balanceError.message, 'warning') : '') + `<section class="card channels-card">${groupPills}${data.writable ? `<div class="toolbar channels-batch-bar"><button class="button small" data-action="select-channels">选择可见</button><button class="button small" data-action="enable-channels">启用选中</button><button class="button small" data-action="disable-channels">停用选中</button><button class="button small" data-action="group-channels">批量设分组</button><button class="button small" data-action="batch-test-channels">${icon('pulse')}测试选中渠道</button><button class="button small" data-action="refresh-balances">${icon('refresh')}刷新余额</button><button class="button small" data-action="manage-groups">${icon('plus')}分组管理</button></div>` : ''}<div class="toolbar channels-filter-bar"><div class="search-field">${icon('search')}<input id="channel-search" type="search" value="${esc(filters.get('q') || '')}" placeholder="搜索渠道、地址或模型…" aria-label="搜索渠道、地址或模型"></div>${select('channel_type_filter', '接入方式', [{ value: '', label: '全部接入方式' }, ...engines.map(engine => ({ value: engine, label: engine }))], filters.get('type') || '')}${select('channel_group_filter', '分组', [{ value: '', label: '全部分组' }, ...groups.map(group => ({ value: group, label: group }))], activeGroup)}<button class="button small" type="button" id="clear-channel-filters">清除筛选</button></div>${list.length ? table(['渠道名称 / 上游地址', '接入方式', '模型与映射', '账号数', '余额 / 套餐', '操作'], channelRows(list, data.writable)) : empty('还没有配置渠道', data.writable ? '点击右上角「添加渠道」开始配置。' : '当前配置源中没有渠道。', 'channels')}<div id="search-empty" hidden>${empty('没有匹配的渠道', '尝试其他渠道名称或模型关键词。', 'search')}</div><div class="table-footer" id="channel-filter-count" role="status" aria-live="polite"></div></section>`;
 }
 async function editChannel(index, initialType = '') {
   const pageGeneration = generation;
@@ -161,6 +161,31 @@ function showChannelBalance(index) {
     const cell = main.querySelector(`[data-channel-balance-index="${index}"]`);
     if (cell) cell.innerHTML = balanceSummary(snapshot);
   });
+}
+async function quickRefreshBalance(index) {
+  const provider = state.channels.channels[index].provider;
+  const pageGeneration = generation;
+  const cell = main.querySelector(`[data-channel-balance-index="${index}"]`);
+  if (cell) cell.innerHTML = '<span class="hint">正在刷新余额…</span>';
+  try {
+    const snapshot = await api.request('/channels/balances', { method: 'POST', body: { provider }, timeoutMs: 60000 });
+    if (pageGeneration !== generation) return;
+    state.balances[provider] = snapshot;
+    if (cell) cell.innerHTML = balanceSummary(snapshot);
+    toast(`${provider} 余额已更新`);
+  } catch (err) {
+    if (pageGeneration !== generation) return;
+    if (cell) cell.innerHTML = balanceSummary(state.balances[provider]);
+    toast(`${provider} 余额获取失败：${err.message}`);
+  }
+}
+async function batchRefreshBalances() {
+  const checked = new Set(selectedChannels());
+  const all = state.channels?.channels || [];
+  const targets = checked.size ? all.map((ch, idx) => [ch, idx]).filter(([ch]) => checked.has(ch.provider)) : all.map((ch, idx) => [ch, idx]).filter(([ch]) => ch.enabled !== false);
+  if (!targets.length) { toast('没有可刷新余额的渠道'); return; }
+  toast(`正在并发刷新 ${targets.length} 个渠道余额…`);
+  await Promise.allSettled(targets.map(([, idx]) => quickRefreshBalance(idx)));
 }
 function selectedChannels() {
   return [...main.querySelectorAll('[data-channel-select]:checked')].filter(box => !box.closest('tr').hidden).map(box => state.channels.channels[Number(box.dataset.channelSelect)].provider);
@@ -212,9 +237,10 @@ function pluginDetail(index) {
     }));
   } });
 }
-function togglePlugin(index) {
+async function togglePlugin(index) {
   const plugin = state.plugins.plugins[index];
-  confirmAction({ title: plugin.enabled ? '停用插件' : '启用插件', message: plugin.enabled ? `确认停用“${plugin.id}”？新的相关渠道请求可能无法执行，已有在途请求继续使用其租约。` : `确认启用“${plugin.id}”？该服务将重新参与相关渠道请求。`, label: plugin.enabled ? '确认停用' : '确认启用', action: async () => { await api.post(`/plugins/${encodeURIComponent(plugin.id)}/${plugin.enabled ? 'disable' : 'enable'}`, { expected_revision: plugin.revision }); toast('插件启用状态已更新'); await render(); } });
+  await api.post(`/plugins/${encodeURIComponent(plugin.id)}/${plugin.enabled ? 'disable' : 'enable'}`, { expected_revision: plugin.revision });
+  toast('插件启用状态已更新'); await render();
 }
 async function interceptors() {
   const data = await read('/interceptors'); state = { interceptors: data };
@@ -236,9 +262,16 @@ function editInterceptor(index) {
   } });
 }
 function validateHeader(name) { if (!/^x-[a-z0-9-]+$/.test(name) || ['x-api-key', 'x-auth-token', 'x-authorization', 'x-csrf-token'].includes(name)) throw new Error(`不允许修改请求头 ${name}。仅支持自定义非敏感 x-* 请求头。`); }
-function mutateInterceptor(index, operation) {
+async function mutateInterceptor(index, operation) {
   const original = state.interceptors; const item = original.interceptors[index];
-  confirmAction({ title: operation === 'delete' ? '删除拦截器' : item.enabled ? '停用拦截器' : '启用拦截器', message: `确认${operation === 'delete' ? '删除' : item.enabled ? '停用' : '启用'}规则“${item.id}”？新配置将影响后续插件请求。`, label: '确认更改', action: async () => { const list = original.interceptors.map(v => ({ ...v })); if (operation === 'delete') list.splice(index, 1); else list[index].enabled = !list[index].enabled; await api.put('/interceptors', { expected_revision: original.revision, interceptors: list }); toast('拦截器规则已更新'); await render(); } });
+  if (operation !== 'delete') {
+    const list = original.interceptors.map(v => ({ ...v }));
+    list[index].enabled = !list[index].enabled;
+    await api.put('/interceptors', { expected_revision: original.revision, interceptors: list });
+    toast('拦截器规则已更新'); await render();
+    return;
+  }
+  confirmAction({ title: '删除拦截器', message: `确认删除规则“${item.id}”？新配置将影响后续插件请求。`, label: '确认更改', action: async () => { const list = original.interceptors.map(v => ({ ...v })); list.splice(index, 1); await api.put('/interceptors', { expected_revision: original.revision, interceptors: list }); toast('拦截器规则已更新'); await render(); } });
 }
 
 async function usage() {
@@ -288,15 +321,18 @@ const pages = { overview, channels, plugins, interceptors, usage, settings };
 async function render() {
   if (currentRoute === 'workspace' && !confirmWorkspaceLeave()) { window.history.replaceState(null, '', '#workspace'); return; }
   const token = ++generation; controller?.abort(); controller = new AbortController();
-  currentRoute = window.location.hash.slice(1).split('?')[0] || 'overview';
-  if (!routes[currentRoute]) { window.location.hash = 'overview'; return; }
+  const nextRoute = window.location.hash.slice(1).split('?')[0] || 'overview';
+  if (!routes[nextRoute]) { window.location.hash = 'overview'; return; }
+  const sameRoute = nextRoute === currentRoute && Boolean(main.innerHTML) && !main.innerHTML.includes('class="spinner"');
+  currentRoute = nextRoute;
   const navRoute = currentRoute === 'log-settings' ? 'settings' : currentRoute === 'usage' ? 'logs' : currentRoute;
   document.querySelectorAll('[data-route]').forEach(link => { if (link.dataset.route === navRoute) link.setAttribute('aria-current', 'page'); else link.removeAttribute('aria-current'); });
   document.querySelector('#breadcrumb-current').textContent = routes[currentRoute][0]; document.title = `${routes[currentRoute][0]} · Miora 管理控制台`;
-  main.innerHTML = head() + (currentRoute === 'settings' ? settingsNav('settings') : '') + loading(); main.setAttribute('aria-busy', 'true'); closeMenu();
+  if (!sameRoute) main.innerHTML = head() + (currentRoute === 'settings' ? settingsNav('settings') : '') + loading();
+  main.setAttribute('aria-busy', 'true'); closeMenu();
   try {
     if (standalonePages[currentRoute]) {
-      main.innerHTML = '';
+      if (!sameRoute) main.innerHTML = '';
       await standalonePages[currentRoute](main, { signal: controller.signal });
     } else {
       const html = await pages[currentRoute](); if (token !== generation) return; main.innerHTML = html; bindPage();
@@ -318,6 +354,7 @@ function bindPage() {
         row.hidden = !row.dataset.search.includes(query) || Boolean(engine && row.dataset.engine !== engine) || Boolean(group && !(state.channels.channels[index].groups || ['default']).includes(group));
         if (!row.hidden) count++;
       });
+      main.querySelectorAll?.('[data-channel-group-pill]')?.forEach?.(btn => btn.setAttribute?.('aria-pressed', String(btn.dataset.channelGroupPill === group)));
       const total = state.channels.channels.length;
       main.querySelector('#search-empty').hidden = count !== 0 || !total;
       main.querySelector('#channel-filter-count').textContent = count === total ? `共 ${fmt(total)} 个渠道` : `显示 ${fmt(count)} / ${fmt(total)} 个渠道`;
@@ -348,9 +385,26 @@ function bindPage() {
   document.querySelector('#validate-settings')?.addEventListener('click', () => saveSettings(document.querySelector('#settings-form'), true));
 }
 main.addEventListener('click', async event => {
+  const copyChip = event.target.closest?.('[data-copy-text]');
+  if (copyChip?.dataset?.copyText) {
+    const text = copyChip.dataset.copyText;
+    try { await navigator.clipboard.writeText(text); toast(`已复制：${text}`); } catch {}
+    return;
+  }
   const target = event.target.closest('[data-action]'); if (!target || target.disabled) return;
+  if (target.dataset.action === 'expand-tags') {
+    const container = target.closest('.tags');
+    container?.querySelectorAll('[data-extra-tag]').forEach(el => { el.hidden = false; });
+    target.hidden = true;
+    return;
+  }
+  if (target.dataset.action === 'filter-channel-group') {
+    const selectEl = main.querySelector('#f-channel_group_filter');
+    if (selectEl) { selectEl.value = target.dataset.channelGroupPill || ''; selectEl.dispatchEvent(new Event('change')); }
+    return;
+  }
   const index = target.dataset.index === undefined ? undefined : Number(target.dataset.index);
-  const actions = { 'check-update': openUpdateDialog, 'channel-balance': () => showChannelBalance(index), 'channel-accounts': () => openChannelAccounts(state.channels.channels[index].provider), 'test-channel': () => openChannelTestDialog(state.channels.channels[index], { revision: state.channels?.revision, writable: state.channels?.writable, onUpdated: render }), 'batch-test-channels': batchTestChannels, 'toggle-channel': () => mutateChannels([state.channels.channels[index].provider], { enabled: state.channels.channels[index].enabled === false }), 'select-channels': () => { for (const box of main.querySelectorAll('[data-channel-select]')) if (!box.closest('tr').hidden) box.checked = true; }, 'enable-channels': () => mutateChannels(selectedChannels(), { enabled: true }), 'disable-channels': () => mutateChannels(selectedChannels(), { enabled: false }), 'group-channels': () => groupChannels(), 'manage-groups': () => openGroupManager({ onChanged: render }), refresh: () => authenticated ? render() : window.location.reload(), 'create-channel': () => editChannel(), 'create-channel-from-plugin': async () => { const plugin = state.plugins.plugins[index]; const initialType = plugin.kind !== 'builtin' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`; window.location.hash = 'channels'; await render(); await editChannel(undefined, initialType); }, 'edit-channel': () => editChannel(index), 'delete-channel': () => deleteChannel(index), 'copy-channel': () => copyChannel(index), 'channel-usage': () => { usageChannel = state.channels.channels[index].provider; usageModel = ''; usageGroup = 'model'; window.location.hash = 'overview'; }, 'create-plugin': () => openPluginUpload(state.plugins.plugins, render), 'upload-plugin-update': () => openPluginUpload(state.plugins.plugins, render, state.plugins.plugins[index]), 'plugin-group': () => { pluginGroup = target.dataset.group === 'builtin' ? 'builtin' : 'installed'; return render(); }, 'usage-detail': () => openUsageDetail((usageGroup === 'channel' ? state.usage.channels : state.usage.usage)[index]), 'plugin-logs': () => openPluginLogs(state.plugins.plugins[index]), 'plugin-detail': () => pluginDetail(index), 'toggle-plugin': () => togglePlugin(index), 'create-interceptor': () => editInterceptor(), 'edit-interceptor': () => editInterceptor(index), 'toggle-interceptor': () => mutateInterceptor(index, 'toggle'), 'delete-interceptor': () => mutateInterceptor(index, 'delete') };
+  const actions = { 'check-update': openUpdateDialog, 'channel-balance': () => showChannelBalance(index), 'quick-balance': () => quickRefreshBalance(index), 'refresh-balances': batchRefreshBalances, 'channel-accounts': () => openChannelAccounts(state.channels.channels[index].provider), 'test-channel': () => openChannelTestDialog(state.channels.channels[index], { revision: state.channels?.revision, writable: state.channels?.writable, onUpdated: render }), 'batch-test-channels': batchTestChannels, 'toggle-channel': () => mutateChannels([state.channels.channels[index].provider], { enabled: state.channels.channels[index].enabled === false }), 'select-channels': () => { const boxes = [...main.querySelectorAll('[data-channel-select]')].filter(box => !box.closest('tr').hidden); const allChecked = boxes.length > 0 && boxes.every(box => box.checked); for (const box of boxes) box.checked = !allChecked; }, 'enable-channels': () => mutateChannels(selectedChannels(), { enabled: true }), 'disable-channels': () => mutateChannels(selectedChannels(), { enabled: false }), 'group-channels': () => groupChannels(), 'manage-groups': () => openGroupManager({ onChanged: render }), refresh: () => authenticated ? render() : window.location.reload(), 'create-channel': () => editChannel(), 'create-channel-from-plugin': async () => { const plugin = state.plugins.plugins[index]; const initialType = plugin.kind !== 'builtin' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`; window.location.hash = 'channels'; await render(); await editChannel(undefined, initialType); }, 'edit-channel': () => editChannel(index), 'delete-channel': () => deleteChannel(index), 'copy-channel': () => copyChannel(index), 'channel-usage': () => { usageChannel = state.channels.channels[index].provider; usageModel = ''; usageGroup = 'model'; window.location.hash = 'overview'; }, 'create-plugin': () => openPluginUpload(state.plugins.plugins, render), 'upload-plugin-update': () => openPluginUpload(state.plugins.plugins, render, state.plugins.plugins[index]), 'plugin-group': () => { pluginGroup = target.dataset.group === 'builtin' ? 'builtin' : 'installed'; return render(); }, 'usage-detail': () => openUsageDetail((usageGroup === 'channel' ? state.usage.channels : state.usage.usage)[index]), 'plugin-logs': () => openPluginLogs(state.plugins.plugins[index]), 'plugin-detail': () => pluginDetail(index), 'toggle-plugin': () => togglePlugin(index), 'create-interceptor': () => editInterceptor(), 'edit-interceptor': () => editInterceptor(index), 'toggle-interceptor': () => mutateInterceptor(index, 'toggle'), 'delete-interceptor': () => mutateInterceptor(index, 'delete') };
   if (!actions[target.dataset.action]) return;
   target.disabled = true;
   try { await actions[target.dataset.action](); }
@@ -374,7 +428,7 @@ document.addEventListener('keydown', event => {
   }
 });
 document.querySelector('#check-update')?.addEventListener('click', openUpdateDialog);
-document.querySelector('#logout').addEventListener('click', () => confirmAction({ title: '退出管理会话', message: '确认退出？未保存的表单修改将丢失。', label: '退出登录', action: async () => { await api.post('/logout'); api.setSession(null); window.location.replace('/login'); } }));
+document.querySelector('#logout').addEventListener('click', async () => { await api.post('/logout'); api.setSession(null); window.location.replace('/login'); });
 window.addEventListener('hashchange', () => { if (authenticated) render(); });
 mountIcons();
 try { const session = await api.session(); authenticated = true; document.querySelector('#account-name').textContent = session.user?.username || '管理员'; document.querySelector('#session-state').textContent = '管理会话已验证'; await render(); }

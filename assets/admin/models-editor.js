@@ -115,7 +115,7 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
     <p class="models-message" role="status" aria-live="polite" hidden></p>
     <div class="models-catalog"><div class="models-search search-field">${icon('search')}<input type="search" aria-label="搜索候选模型" placeholder="搜索模型名称或 ID" data-model-search></div><div class="models-catalog-actions"><span data-candidate-count></span><div><button class="button small ghost" type="button" data-model-action="select-filtered">全选</button><button class="button small ghost" type="button" data-model-action="clear-filtered">取消</button></div></div><div class="model-candidates" role="group" aria-label="候选模型"></div></div>
     <div class="models-manual"><label for="manual-model-input">手动添加（支持 <code class="mono">上游模型=对外名称</code>）</label><div><input id="manual-model-input" autocomplete="off" spellcheck="false" placeholder="模型 ID 或 上游ID=对外别名"><button type="button" class="button" data-model-action="add">${icon('plus')}添加</button><button type="button" class="button ghost" data-model-action="strip-prefix">去除厂商前缀</button></div></div>
-    <div class="models-selected-heading"><h3>已选模型 <span class="badge purple" data-selected-count aria-live="polite"></span></h3><div class="table-actions">${testModel ? `<button type="button" class="button small primary" data-model-action="test-all">${icon('pulse')}批量测活</button><button type="button" class="button small text-danger" data-model-action="remove-failed" hidden>${icon('trash')}移除失败</button>` : ''}<span>上游模型 → 对外别名</span></div></div>
+    <div class="models-selected-heading"><h3>已选模型 <span class="badge purple" data-selected-count aria-live="polite"></span></h3><div class="table-actions">${testModel ? `<button type="button" class="button small primary" data-model-action="test-all">${icon('pulse')}批量测活</button><button type="button" class="button small text-danger" data-model-action="remove-failed" hidden>${icon('trash')}移除失败</button>` : ''}<button type="button" class="button small ghost" data-model-action="copy-all">${icon('copy')}复制全部</button><button type="button" class="button small ghost text-danger" data-model-action="clear-all">${icon('trash')}清空</button><span>上游模型 → 对外别名</span></div></div>
     ${testModel ? `<details class="test-params-details"><summary>自定义测活参数（默认发 "hi" · 可自选温度与思考强度）</summary><div class="models-test-bar"><label class="test-param-item"><span>测试内容</span><input type="text" data-model-test-prompt value="hi" placeholder="hi"></label><label class="test-param-item"><span>温度 (Temp)</span><input type="number" data-model-test-temp step="0.1" min="0" max="2" placeholder="默认不传"></label><label class="test-param-item"><span>Top P</span><input type="number" data-model-test-top-p step="0.05" min="0" max="1" placeholder="默认不传"></label><label class="test-param-item"><span>最大 Token</span><input type="number" data-model-test-limit value="16" min="1" step="1" placeholder="16"></label><label class="test-param-item"><span>思考强度</span><select data-model-test-effort><option value="">默认</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option></select></label></div></details>` : ''}
     <div class="models-selected-search"><div class="search-field">${icon('search')}<input type="search" data-selected-search placeholder="搜索已选模型或别名" aria-label="搜索已选模型或别名"></div><button type="button" class="button small" data-model-action="clear-selected-filter" hidden>清除筛选</button></div>
     <details class="model-batch-pricing"><summary>批量设置价格</summary><div class="model-price-fields">${PRICE_FIELDS.map(([key, label]) => `<label><span>${label}</span><input type="text" inputmode="decimal" autocomplete="off" data-batch-price-key="${key}" placeholder="保持原值" aria-label="批量设置${label}单价"></label>`).join('')}</div><div class="model-batch-actions"><span class="hint">只更新填写项；0 为免费。保存渠道后生效。</span><button type="button" class="button small" data-model-action="apply-prices"></button></div><p class="models-message" data-batch-price-message role="status" hidden></p></details>
@@ -271,8 +271,15 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
       if (destroyed || current !== sequence) return;
       candidates = mergeModelCandidates(candidates, result.models);
       const sources = { upstream: '上游服务', plugin: '渠道插件', catalog: '内置目录' };
-      showMessage(`已从${sources[result.source] || '服务端'}获取 ${result.models.length} 个模型。请勾选需要的模型，已有选择未更改。`);
-      renderCandidates();
+      const discoveredIds = result.models.map(m => typeof m === 'string' ? m : m?.id).filter(Boolean);
+      if (!rows.length && discoveredIds.length) {
+        rows = selectModelCandidates(rows, discoveredIds, true);
+        showMessage(`已从${sources[result.source] || '服务端'}获取并自动全选 ${discoveredIds.length} 个模型。`);
+        render();
+      } else {
+        showMessage(`已从${sources[result.source] || '服务端'}获取 ${result.models.length} 个模型。请勾选需要的模型，已有选择未更改。`);
+        renderCandidates();
+      }
     } catch (error) {
       if (!destroyed && current === sequence) showMessage(`${error.message} 可继续手动添加模型。`, true);
     } finally {
@@ -335,6 +342,17 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
       showMessage(`已移除 ${before - rows.length} 个测活失败的模型。`);
       render();
     }
+    else if (action === 'copy-all') {
+      const names = rows.map(r => r.alias.trim() || r.upstream.trim()).filter(Boolean);
+      if (!names.length) { showMessage('当前没有可复制的模型。', true); return; }
+      navigator.clipboard?.writeText(names.join(', ')).then(() => showMessage(`已复制 ${names.length} 个模型名称到剪贴板。`), () => showMessage(names.join(', ')));
+    }
+    else if (action === 'clear-all') {
+      if (!rows.length) return;
+      rows = [];
+      showMessage('已清空全部已选模型。');
+      render();
+    }
     else if (action === 'remove') { rows.splice(Number(button.dataset.rowIndex), 1); render(); }
     else if (action === 'alias') { const index = Number(button.dataset.rowIndex), copy = { upstream: rows[index].upstream, alias: '' }; modelPricing.copy(rows[index], copy); rows.splice(index + 1, 0, copy); selectedSearch.value = ''; renderSelected(); onChange(); root.querySelector(`[data-alias-index="${index + 1}"]`).focus(); }
   });
@@ -342,6 +360,7 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
   manual.addEventListener('paste', event => { const text = event.clipboardData?.getData('text') || ''; if (splitModelInput(text).length > 1) { event.preventDefault(); addManual([manual.value, text].join('\n')); } });
   render();
   return {
+    discover: fetchModels,
     snapshot() { return rows.map(row => ({ ...row })); },
     pricing() { return modelPricing.value(rows); },
     value() {

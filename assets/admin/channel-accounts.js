@@ -68,7 +68,7 @@ export async function openChannelAccounts(provider) {
   const testState = new Map();
   function draw() {
     const view = form.querySelector('[data-account-list]');
-    view.innerHTML = data.keys.length ? `<div class="table-scroll account-pool-scroll"><table class="account-pool-table"><thead><tr><th>账号 / 邮箱</th><th>状态</th><th>冷却</th><th>失败</th><th>认证</th><th>操作</th></tr></thead><tbody>${data.keys.map(key => {
+    view.innerHTML = data.keys.length ? `<div class="toolbar"><span class="hint">共 ${data.keys.length} 个账号凭据</span><button type="button" class="button small primary" data-key-test-all>${icon('pulse')}全部测活</button></div><div class="table-scroll account-pool-scroll"><table class="account-pool-table"><thead><tr><th>账号 / 邮箱</th><th>状态</th><th>冷却</th><th>失败</th><th>认证</th><th>操作</th></tr></thead><tbody>${data.keys.map(key => {
       const st = testState.get(key.position);
       const testBadge = st?.status === 'testing' ? badge('正在发 hi…', 'purple') : st?.status === 'ok' ? badge(`${st.elapsed_ms} ms 正常`, 'green') : st?.status === 'error' ? badge(`失败 (${st.http_status || 'ERR'})`, 'orange') : '';
       return `<tr class="account-pool-row"><td class="account-col-id">${formatAccountIdentity(key)}${testBadge ? `<div>${testBadge}</div>` : ''}</td><td class="account-col-status">${badge(key.enabled ? '启用中' : '已停用', key.enabled ? 'green' : 'orange')}</td><td class="account-col-cooldown">${key.cooldown_seconds ? badge(`冷却 ${key.cooldown_seconds}s`, 'orange') : '正常'}</td><td class="account-col-fail">${key.failure_count}</td><td class="account-col-auth">${formatOAuthState(key)}</td><td class="account-col-action"><div class="table-actions"><button type="button" class="button small" data-key-test="${key.position}">${icon('pulse')}测活</button><button type="button" class="button small" data-key-toggle="${key.position}">${key.enabled ? '停用' : '启用'}</button>${key.oauth?.refreshable ? `<button type="button" class="button small" data-key-refresh="${key.position}">${icon('refresh')}刷新授权</button>` : ''}<button type="button" class="button small text-danger" data-key-remove="${key.position}">${icon('trash')}移除</button></div></td></tr>`;
@@ -109,6 +109,22 @@ export async function openChannelAccounts(provider) {
       form.addEventListener('click', async event => {
         if (event.target.closest('[data-core-link]')) {
           await mutate({ account_refs: coreSelector.value() }, 'POST', '核心账号已关联；刷新仍由核心统一管理');
+          return;
+        }
+        if (event.target.closest('[data-key-test-all]')) {
+          await Promise.allSettled(data.keys.map(async key => {
+            const position = key.position;
+            testState.set(position, { status: 'testing' });
+            draw();
+            try {
+              const res = await api.request('/test', { method: 'POST', signal: controller.signal, timeoutMs: 65000, body: { direct: true, provider, key_position: position } });
+              testState.set(position, res.ok ? { status: 'ok', elapsed_ms: res.elapsed_ms, http_status: res.http_status } : { status: 'error', http_status: res.http_status });
+            } catch {
+              testState.set(position, { status: 'error', http_status: 'ERR' });
+            }
+            if (!closed) draw();
+          }));
+          toast('全部账号测活完成');
           return;
         }
         const testBtn = event.target.closest('[data-key-test]');
@@ -202,6 +218,9 @@ export async function openChannelAccounts(provider) {
             }
           } catch (failure) { form.querySelector('[data-account-error]').textContent = failure.message; }
         }
+      });
+      form.querySelector('[data-account-file]')?.addEventListener('change', () => {
+        if (form.querySelector('[data-account-file]')?.files?.length) form.querySelector('[data-account-upload]')?.click();
       });
       timer = setInterval(async () => {
         if (busy || closed || document.hidden) return;
