@@ -53,6 +53,15 @@ use std::sync::Arc;
 use std::time::Instant;
 use url::Url;
 
+fn is_oauth_credential(provider: &Provider, key: &str) -> bool {
+    key.starts_with("core-oauth:")
+        || key.trim_start().starts_with('{')
+        || (matches!(
+            provider.engine.to_ascii_lowercase().as_str(),
+            "codex" | "claude" | "antigravity"
+        ) && key.contains(','))
+}
+
 pub(crate) struct AttemptLoop {
     pub(crate) state: AppState,
     pub(crate) started: Instant,
@@ -186,57 +195,28 @@ pub(crate) async fn next_generic_hedge_plan(
                 continue;
             }
         };
-        let mut provider_key = provider_key_raw.clone();
-        let mut codex_account_id = None;
-        if (matches!(
-            provider.engine.to_ascii_lowercase().as_str(),
-            "codex" | "claude" | "antigravity"
-        ) && provider_key_raw.contains(','))
-            || provider_key_raw.trim_start().starts_with('{')
+        let mut prepared = match execution
+            .state
+            .plugins
+            .prepare_authenticated(
+                &execution.state.codex_oauth,
+                &provider,
+                &provider_key_raw,
+                &execution.request_model,
+                &original_model,
+                &execution.method,
+                &execution.uri,
+                &execution.path,
+                &execution.headers,
+                &execution.input,
+                &execution.request_id,
+            )
+            .await
         {
-            match execution
-                .state
-                .codex_oauth
-                .resolve(
-                    &provider_key_raw,
-                    provider.preferences.get("proxy").and_then(Value::as_str),
-                )
-                .await
-            {
-                Ok(auth) => {
-                    provider_key = auth.bearer;
-                    codex_account_id = auth.account_id;
-                }
-                Err(error) => {
-                    *last_status = StatusCode::UNAUTHORIZED;
-                    *last_detail = error;
-                    emit_routing_skip(
-                        execution,
-                        attempt_index,
-                        &provider,
-                        &original_model,
-                        "codex_oauth_resolution_failed",
-                    );
-                    continue;
-                }
-            }
-        }
-        let mut prepared = match execution.state.plugins.prepare(
-            &provider,
-            &provider_key,
-            &execution.request_model,
-            &original_model,
-            &execution.method,
-            &execution.uri,
-            &execution.path,
-            &execution.headers,
-            &execution.input,
-            &execution.request_id,
-        ) {
             Ok(attempt) => attempt,
             Err(error) => {
-                *last_status = StatusCode::BAD_REQUEST;
-                *last_detail = error;
+                *last_status = error.status();
+                *last_detail = error.to_string();
                 emit_routing_skip(
                     execution,
                     attempt_index,
@@ -247,11 +227,6 @@ pub(crate) async fn next_generic_hedge_plan(
                 continue;
             }
         };
-        if let Some(account_id) = codex_account_id {
-            if let Ok(value) = HeaderValue::from_str(&account_id) {
-                prepared.headers.insert("chatgpt-account-id", value);
-            }
-        }
         let attempt_id = format!("{}-r{}", execution.request_id, attempt_index + 1);
         if let Ok(value) = HeaderValue::from_str(&attempt_id) {
             prepared
@@ -610,8 +585,7 @@ pub(crate) async fn run_hedged_attempt_loop(
                         })
                         .await;
                 }
-                if context.provider.engine.eq_ignore_ascii_case("codex")
-                    && context.provider_key.contains(',')
+                if is_oauth_credential(&context.provider, &context.provider_key)
                     && matches!(failure.status.as_u16(), 401..=403)
                 {
                     execution
@@ -744,57 +718,30 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                 continue;
             }
         };
-        let mut provider_key = provider_key_raw.clone();
-        let mut codex_account_id = None;
-        if (matches!(
-            provider.engine.to_ascii_lowercase().as_str(),
-            "codex" | "claude" | "antigravity"
-        ) && provider_key_raw.contains(','))
-            || provider_key_raw.trim_start().starts_with('{')
+        let mut prepared = match state
+            .plugins
+            .prepare_authenticated(
+                &state.codex_oauth,
+                &provider,
+                &provider_key_raw,
+                &request_model,
+                &original_model,
+                &method,
+                &uri,
+                &path,
+                &headers,
+                &input,
+                &request_id,
+            )
+            .await
         {
-            match state
-                .codex_oauth
-                .resolve(
-                    &provider_key_raw,
-                    provider.preferences.get("proxy").and_then(Value::as_str),
-                )
-                .await
-            {
-                Ok(auth) => {
-                    provider_key = auth.bearer;
-                    codex_account_id = auth.account_id;
-                }
-                Err(error) => {
-                    last_status = StatusCode::UNAUTHORIZED;
-                    last_detail = error;
-                    continue;
-                }
-            }
-        }
-        let mut prepared = match state.plugins.prepare(
-            &provider,
-            &provider_key,
-            &request_model,
-            &original_model,
-            &method,
-            &uri,
-            &path,
-            &headers,
-            &input,
-            &request_id,
-        ) {
             Ok(attempt) => attempt,
             Err(error) => {
-                last_status = StatusCode::BAD_REQUEST;
-                last_detail = error;
+                last_status = error.status();
+                last_detail = error.to_string();
                 continue;
             }
         };
-        if let Some(account_id) = codex_account_id {
-            if let Ok(value) = HeaderValue::from_str(&account_id) {
-                prepared.headers.insert("chatgpt-account-id", value);
-            }
-        }
         let attempt_started = Instant::now();
         prepared.dispatch = arrival.map(|arrival| {
             arrival.attempt(
@@ -985,8 +932,7 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                                     })
                                     .await;
                             }
-                            if outcome_provider.engine.eq_ignore_ascii_case("codex")
-                                && outcome_provider_key.contains(',')
+                            if is_oauth_credential(&outcome_provider, &outcome_provider_key)
                                 && matches!(policy.status, 401..=403)
                             {
                                 outcome_state.codex_oauth.clear(&outcome_provider_key).await;
@@ -1131,8 +1077,7 @@ pub(crate) async fn run_attempt_loop(execution: AttemptLoop) -> Response<Body> {
                         })
                         .await;
                 }
-                if provider.engine.eq_ignore_ascii_case("codex")
-                    && provider_key_raw.contains(',')
+                if is_oauth_credential(&provider, &provider_key_raw)
                     && matches!(failure.status.as_u16(), 401..=403)
                 {
                     state.codex_oauth.clear(&provider_key_raw).await;

@@ -334,16 +334,18 @@ impl RuntimeConfigPublisher {
 }
 
 pub(crate) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     tokio::fs::create_dir_all(parent)
         .await
         .map_err(|error| format!("create snapshot directory {}: {error}", parent.display()))?;
     let temporary = parent.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}.{}.tmp",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("snapshot"),
         std::process::id(),
+        SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
     ));
     tokio::fs::write(&temporary, bytes)
         .await
@@ -355,9 +357,11 @@ pub(crate) async fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String
             .await
             .map_err(|error| format!("chmod {}: {error}", temporary.display()))?;
     }
-    tokio::fs::rename(&temporary, path)
-        .await
-        .map_err(|error| format!("publish {}: {error}", path.display()))
+    if let Err(error) = tokio::fs::rename(&temporary, path).await {
+        let _ = tokio::fs::remove_file(&temporary).await;
+        return Err(format!("publish {}: {error}", path.display()));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

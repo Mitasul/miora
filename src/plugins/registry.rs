@@ -546,33 +546,86 @@ impl PluginRegistry {
                 }
             }
         }
-        Self::check_instances(manifest, &defaults, providers)
+        Self::check_instances(manifest, &defaults, providers, &current.published)
     }
 
     fn check_instances(
         manifest: &Manifest,
         defaults: &Map<String, Value>,
         providers: &[Arc<crate::config::snapshot::Provider>],
+        snapshot: &Snapshot,
     ) -> Result<(), String> {
-        for provider in providers.iter().filter(|provider| {
-            super::runtime::channel_plugin_id(provider) == Some(manifest.id.as_str())
-        }) {
+        for provider in providers {
+            let channel_id = super::runtime::channel_plugin_id(provider);
             let mut config = defaults.clone();
-            if let Some(overrides) = provider
-                .preferences
-                .get("plugin_config")
-                .and_then(Value::as_object)
+            if channel_id == Some(manifest.id.as_str()) {
+                if let Some(overrides) = provider
+                    .preferences
+                    .get("plugin_config")
+                    .and_then(Value::as_object)
+                {
+                    config.extend(overrides.clone());
+                }
+                if !manifest.auth.config_key.is_empty() {
+                    if let Some(key) = provider
+                        .api_keys
+                        .first()
+                        .filter(|key| key.as_str() != "__channel_plugin__")
+                    {
+                        config.insert(manifest.auth.config_key.clone(), json!(key));
+                    }
+                }
+            } else if manifest.capabilities.balance_query
+                || provider
+                    .preferences
+                    .get("balance_plugin")
+                    .and_then(Value::as_str)
+                    == Some(manifest.id.as_str())
             {
-                config.extend(overrides.clone());
-            }
-            if !manifest.auth.config_key.is_empty() {
-                if let Some(key) = provider
-                    .api_keys
-                    .first()
-                    .filter(|key| key.as_str() != "__channel_plugin__")
+                let source = channel_id
+                    .and_then(|id| snapshot.versions.get(id))
+                    .map(AsRef::as_ref);
+                let uses_balance = match provider
+                    .preferences
+                    .get("balance_plugin")
+                    .and_then(Value::as_str)
+                {
+                    Some(id) => id == manifest.id,
+                    None if source
+                        .is_some_and(|version| version.manifest.capabilities.balance_query) =>
+                    {
+                        false
+                    }
+                    None => {
+                        let source_config = Self::balance_source_config(provider, source)?;
+                        Self::matches_balance_target(manifest, provider, source, &source_config)
+                    }
+                };
+                if !uses_balance {
+                    continue;
+                }
+                if !manifest.capabilities.balance_query {
+                    return Err(format!("channel {} requires balance_query", provider.name));
+                }
+                let (overrides, key) = Self::balance_configuration(
+                    manifest,
+                    provider,
+                    provider
+                        .api_keys
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or_default(),
+                    source,
+                )?;
+                config.extend(overrides);
+                if !manifest.auth.config_key.is_empty()
+                    && !key.is_empty()
+                    && key != "__channel_plugin__"
                 {
                     config.insert(manifest.auth.config_key.clone(), json!(key));
                 }
+            } else {
+                continue;
             }
             manifest
                 .config(&config, true)
@@ -595,7 +648,12 @@ impl PluginRegistry {
             .versions
             .get(&revision)
             .ok_or("revision_not_found")?;
-        Self::check_instances(&version.manifest, &version.config, providers)
+        Self::check_instances(
+            &version.manifest,
+            &version.config,
+            providers,
+            &store.published,
+        )
     }
 
     pub fn execution_client(

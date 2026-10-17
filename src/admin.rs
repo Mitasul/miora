@@ -3,6 +3,7 @@
 mod accounts;
 mod auth;
 mod backend_logs;
+mod balances;
 mod channel_preview;
 mod management;
 mod testing;
@@ -143,7 +144,13 @@ async fn handle_inner(state: &AppState, request: Request) -> Response<Body> {
             .as_ref()
             .map(|snapshot| snapshot.providers.as_slice())
             .unwrap_or_default();
-        crate::plugins::api::handle(state.plugins.as_ref(), request, providers).await
+        crate::plugins::api::handle(
+            state.plugins.as_ref(),
+            request,
+            providers,
+            &state.codex_oauth,
+        )
+        .await
     } else {
         management::handle(state, request, &path).await
     };

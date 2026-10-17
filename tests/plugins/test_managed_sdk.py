@@ -385,5 +385,101 @@ class NativeProxyTests(unittest.TestCase):
             channel.invoke(context)
 
 
+class CoreOAuthTests(unittest.TestCase):
+    def context(self, account="b"):
+        return sdk.Context({}, {"base_url": "https://vendor.invalid", "account_id": "stale-account-a", "api_key": "not-the-token"}, "images",
+            {"type": "core_oauth", "provider": "codex"}, resolved_auth={"provider": "codex", "account_ref": f"core-oauth:codex:{account}", "access_token": f"access-{account}", "account_id": f"account-{account}", "expires_at": 1900000000})
+
+    def test_core_headers_pair_current_access_token_and_account_id(self):
+        channel = sdk.Responses({})
+        for account in ["a", "b", "a"]:
+            context = self.context(account)
+            headers = channel.headers(context)
+            self.assertEqual(headers["Authorization"], f"Bearer access-{account}")
+            self.assertEqual(headers["ChatGPT-Account-Id"], f"account-{account}")
+            self.assertEqual(context.account["account_ref"], f"core-oauth:codex:{account}")
+            self.assertNotIn("access_token", context.account)
+            self.assertNotIn("refresh_token", context.resolved_auth)
+
+    def test_core_credentials_cannot_use_local_store_or_plugin_owned_oauth(self):
+        context = self.context()
+        with patch.object(sdk, "CredentialStore") as store:
+            with self.assertRaisesRegex(ValueError, "managed by Miora"):
+                context.credentials
+            store.assert_not_called()
+        channel = sdk.Responses({})
+        channel.oauth = Mock()
+        with self.assertRaisesRegex(ValueError, "cannot refresh"):
+            channel.headers(context)
+        channel.oauth.access_token.assert_not_called()
+
+    def test_missing_or_wrong_supplier_auth_never_falls_back_to_config_credentials(self):
+        for resolved in [{}, {"provider": "claude", "access_token": "other", "account_id": "other"}, {"provider": "codex", "access_token": "access"}]:
+            context = self.context()
+            context.resolved_auth = resolved
+            with patch.object(sdk.urllib.request, "urlopen") as opened:
+                with self.assertRaisesRegex(ValueError, "not resolved"):
+                    sdk.Responses({}).open_http(context, "/v1/responses", body={})
+                opened.assert_not_called()
+
+    def test_native_proxy_overrides_stale_account_header_with_selected_account(self):
+        context = self.context()
+        context.request = {"format": "native", "method": "POST", "endpoint": "/images", "headers": [["chatgpt-account-id", "stale-account-a"]], "body_resource": {"resource_id": "body", "content_type": "image/png", "size": 4}}
+        context.resources.add(b"\x89PNG", content_type="image/png", resource_id="body")
+        self.addCleanup(context.resources.close)
+        channel = sdk.NativeProxy({})
+        channel.transport = Mock()
+        channel.transport.open.return_value = NativeProxyTests.upstream(self)
+        channel.invoke(context)
+        request = channel.transport.open.call_args.args[0]
+        headers = {name.lower(): value for name, value in request.header_items()}
+        self.assertEqual(headers["authorization"], "Bearer access-b")
+        self.assertEqual(headers["chatgpt-account-id"], "account-b")
+        self.assertEqual(b"".join(request.data), b"\x89PNG")
+
+    def test_model_discovery_uses_the_same_resolved_authentication(self):
+        channel = sdk.Responses({"capabilities": {"model_discovery": True}})
+        response = io.BytesIO(b'{"data":[{"id":"image-model"}]}')
+        response.status = 200
+        with patch.object(sdk.urllib.request, "urlopen", return_value=response) as opened:
+            models = channel.models(self.context())
+        self.assertEqual(models, [{"id": "image-model", "name": "image-model"}])
+        headers = {name.lower(): value for name, value in opened.call_args.args[0].header_items()}
+        self.assertEqual(headers["authorization"], "Bearer access-b")
+        self.assertEqual(headers["chatgpt-account-id"], "account-b")
+
+
+class BalanceTests(unittest.TestCase):
+    def test_balance_hook_reuses_resolved_core_account_without_a_refresh_store(self):
+        context = sdk.Context({}, {}, "images", {"type": "core_oauth", "provider": "codex"},
+            resolved_auth={"provider": "codex", "account_ref": "core-oauth:codex:b", "access_token": "access-b", "account_id": "account-b"})
+
+        class Images(sdk.Responses):
+            def balance(self, current):
+                self.captured = (current.account, self.headers(current))
+                return {"plan": "plus", "windows": [{"label": "5h", "remaining_percent": 75}]}
+
+        channel = Images({"capabilities": {"balance_query": True}})
+        with patch.object(sdk, "CredentialStore") as store:
+            result = channel.query_balance(context)
+            store.assert_not_called()
+        self.assertEqual(result["plan"], "plus")
+        self.assertEqual(channel.captured[1]["Authorization"], "Bearer access-b")
+        self.assertEqual(channel.captured[1]["ChatGPT-Account-Id"], "account-b")
+        self.assertNotIn("access_token", channel.captured[0])
+
+    def test_undeclared_balance_hook_is_not_executed(self):
+        channel = sdk.OpenAIChat({"capabilities": {}})
+        channel.balance = Mock()
+        with self.assertRaisesRegex(sdk.RequestParameterError, "balance_query"):
+            channel.query_balance(sdk.Context({}, {}, "images", {}))
+        channel.balance.assert_not_called()
+
+    def test_declared_but_missing_balance_hook_does_not_return_fake_success(self):
+        channel = sdk.OpenAIChat({"capabilities": {"balance_query": True}})
+        with self.assertRaisesRegex(NotImplementedError, "balance query"):
+            channel.query_balance(sdk.Context({}, {}, "images", {}))
+
+
 if __name__ == "__main__":
     unittest.main()

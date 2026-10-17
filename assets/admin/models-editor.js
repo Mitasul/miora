@@ -233,11 +233,6 @@ export function createModelsEditor(root, { models = [], pricing = {}, discover, 
   }
   function render() { renderCandidates(); renderSelected(); onChange(); }
   function choose(ids, selected) {
-    if (!selected) {
-      const removed = rows.filter(row => ids.includes(row.upstream));
-      const aliases = removed.filter(row => row.alias);
-      if (aliases.length && !window.confirm(`取消这些模型将同时移除 ${aliases.length} 个对外别名（共 ${removed.length} 项）。确认取消？`)) { renderCandidates(); return; }
-    }
     rows = selectModelCandidates(rows, ids, selected);
     render();
   }

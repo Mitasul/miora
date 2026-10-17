@@ -30,6 +30,8 @@ pub(crate) struct Authentication {
     pub header: String,
     #[serde(default)]
     pub query: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub provider: String,
 }
 impl Default for Authentication {
     fn default() -> Self {
@@ -38,6 +40,7 @@ impl Default for Authentication {
             config_key: String::new(),
             header: String::new(),
             query: String::new(),
+            provider: String::new(),
         }
     }
 }
@@ -56,8 +59,44 @@ pub(crate) struct Capabilities {
     #[serde(default)]
     pub model_discovery: bool,
     #[serde(default)]
+    pub balance_query: bool,
+    #[serde(default)]
     pub oauth: bool,
 }
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct BalanceTarget {
+    #[serde(default)]
+    pub engines: Vec<String>,
+    #[serde(default)]
+    pub oauth_providers: Vec<String>,
+    #[serde(default)]
+    pub origins: Vec<String>,
+    #[serde(default)]
+    pub path_prefix: String,
+}
+
+impl BalanceTarget {
+    pub(crate) fn matches(&self, engine: &str, oauth: Option<&str>, base: &str) -> bool {
+        let url = url::Url::parse(base).ok();
+        let selected = self.engines.iter().any(|value| value == engine)
+            || oauth
+                .is_some_and(|provider| self.oauth_providers.iter().any(|value| value == provider))
+            || url
+                .as_ref()
+                .is_some_and(|url| self.origins.contains(&url.origin().ascii_serialization()));
+        selected
+            && (self.path_prefix.is_empty()
+                || url.as_ref().is_some_and(|url| {
+                    url.path() == self.path_prefix
+                        || url
+                            .path()
+                            .strip_prefix(&self.path_prefix)
+                            .is_some_and(|suffix| suffix.starts_with('/'))
+                }))
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Model {
@@ -93,6 +132,8 @@ pub(crate) struct Manifest {
     #[serde(default)]
     pub auth: Authentication,
     pub capabilities: Capabilities,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub balance_targets: Vec<BalanceTarget>,
     #[serde(default)]
     pub models: Vec<Model>,
 }
@@ -142,7 +183,9 @@ impl Manifest {
             "/search",
             "/v1/alpha/search",
         ];
-        if (self.capabilities.endpoints.is_empty() && self.native_proxy.is_none())
+        if (self.capabilities.endpoints.is_empty()
+            && self.native_proxy.is_none()
+            && !self.capabilities.balance_query)
             || self
                 .capabilities
                 .endpoints
@@ -221,10 +264,23 @@ impl Manifest {
         } else {
             &self.auth.kind
         };
-        if !["none", "bearer", "api_key", "query"].contains(&kind) {
+        if !["none", "bearer", "api_key", "query", "core_oauth"].contains(&kind) {
             return Err("unsupported channel authentication".into());
         }
-        if kind != "none"
+        if kind == "core_oauth" {
+            if self.auth.provider != "codex"
+                || !self.auth.config_key.is_empty()
+                || self.capabilities.oauth
+            {
+                return Err(
+                    "core_oauth requires provider codex, no config_key and no plugin-owned OAuth"
+                        .into(),
+                );
+            }
+        } else if !self.auth.provider.is_empty() {
+            return Err("authentication provider is only supported for core_oauth".into());
+        }
+        if !["none", "core_oauth"].contains(&kind)
             && !self
                 .config_schema
                 .iter()

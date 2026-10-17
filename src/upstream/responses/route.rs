@@ -377,7 +377,9 @@ impl ResponsesRoute {
             }
             let mut provider_key = provider_key_raw.clone();
             let mut codex_account_id = None;
-            if engine == "codex" && provider_key_raw.contains(',') {
+            if engine == "codex"
+                && (provider_key_raw.contains(',') || provider_key_raw.starts_with("core-oauth:"))
+            {
                 let auth = self
                     .codex_oauth
                     .resolve(
@@ -599,6 +601,17 @@ impl ResponsesRoute {
                         force_quota_cooldown: policy.force_quota_cooldown,
                     })
                     .await;
+            }
+        }
+        if matches!(status, 401..=403) {
+            if let (Some(provider), Some(key)) =
+                (self.last_provider.as_ref(), self.last_provider_key.as_deref())
+            {
+                if provider.engine.eq_ignore_ascii_case("codex")
+                    && (key.contains(',') || key.starts_with("core-oauth:"))
+                {
+                    self.codex_oauth.clear(key).await;
+                }
             }
         }
         (policy.retryable

@@ -11,6 +11,7 @@ pub(crate) async fn handle(
     registry: &PluginRegistry,
     request: Request<Body>,
     providers: &[std::sync::Arc<crate::config::snapshot::Provider>],
+    oauth: &crate::providers::codex::oauth::CodexOAuthManager,
 ) -> Response<Body> {
     let path = request.uri().path().trim_end_matches('/').to_owned();
     let method = request.method().clone();
@@ -115,17 +116,30 @@ pub(crate) async fn handle(
     }
     if method == Method::GET && path == "/admin/api/plugins" {
         let mut value = registry.list();
+        let balances: Vec<_> = providers
+            .iter()
+            .map(|provider| {
+                provider
+                    .preferences
+                    .get("balance_plugin")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| registry.balance_plugin_id(provider).ok().flatten())
+            })
+            .collect();
         for plugin in value["plugins"].as_array_mut().unwrap() {
             let channels: Vec<_> = providers
                 .iter()
-                .filter(|provider| {
+                .zip(&balances)
+                .filter(|(provider, balance)| {
                     if plugin["kind"] == "builtin" {
                         plugin["manifest"]["engine"].as_str() == Some(provider.engine.as_ref())
                     } else {
                         super::runtime::channel_plugin_id(provider) == plugin["id"].as_str()
+                            || balance.as_deref() == plugin["id"].as_str()
                     }
                 })
-                .map(|provider| provider.name.as_ref())
+                .map(|(provider, _)| provider.name.as_ref())
                 .collect();
             plugin["channels"] = json!(channels);
         }
@@ -281,14 +295,30 @@ pub(crate) async fn handle(
                         )
                     }
                 };
+                let channel = value
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let provider = providers
+                    .iter()
+                    .find(|provider| provider.name.as_ref() == channel);
+                let key = value
+                    .get("account_ref")
+                    .and_then(Value::as_str)
+                    .or_else(|| {
+                        provider.and_then(|provider| provider.api_keys.first().map(String::as_str))
+                    })
+                    .unwrap_or_default();
                 registry
-                    .models(
+                    .models_authenticated(
+                        oauth,
                         id,
-                        value
-                            .get("channel")
-                            .and_then(Value::as_str)
-                            .unwrap_or_default(),
+                        channel,
                         config,
+                        key,
+                        provider
+                            .and_then(|provider| provider.preferences.get("proxy"))
+                            .and_then(Value::as_str),
                     )
                     .await
             }

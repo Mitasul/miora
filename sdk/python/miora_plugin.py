@@ -25,9 +25,16 @@ class Context:
     cancelled: threading.Event = dataclasses.field(default_factory=threading.Event)
     resources: ResourceStore = dataclasses.field(default_factory=ResourceStore)
     request_schema: list = dataclasses.field(default_factory=list)
+    resolved_auth: dict = dataclasses.field(default_factory=dict)
+
+    @property
+    def account(self):
+        return {key: self.resolved_auth.get(key) for key in ("provider", "account_ref", "account_id", "expires_at")}
 
     @property
     def credentials(self):
+        if self.authentication.get("type") == "core_oauth":
+            raise ValueError("Core OAuth credentials are managed by Miora, not the plugin")
         return CredentialStore(self.channel)
 
     @cached_property
@@ -225,9 +232,17 @@ class Channel:
 
     def headers(self, context):
         headers = {"Content-Type": "application/json"}
-        if self.oauth is not None:
-            headers["Authorization"] = f"Bearer {self.oauth.access_token(context)}"
         auth = context.authentication
+        if auth.get("type") == "core_oauth":
+            if self.oauth is not None:
+                raise ValueError("Core OAuth and plugin-owned OAuth cannot refresh the same account")
+            resolved = context.resolved_auth
+            if resolved.get("provider") != auth.get("provider") or not resolved.get("access_token") or not resolved.get("account_id"):
+                raise ValueError("Core OAuth account was not resolved by Miora")
+            headers["Authorization"] = f"Bearer {resolved['access_token']}"
+            headers["ChatGPT-Account-Id"] = resolved["account_id"]
+        elif self.oauth is not None:
+            headers["Authorization"] = f"Bearer {self.oauth.access_token(context)}"
         token = context.config.get(auth.get("config_key", "api_key"), "")
         if auth.get("type") == "bearer" and self.oauth is None:
             headers["Authorization"] = f"Bearer {token}"
@@ -331,6 +346,14 @@ class Channel:
             if context.cancelled.wait(min(interval, max(0, deadline - time.monotonic()))):
                 raise InterruptedError("Task polling cancelled")
 
+    def balance(self, context):
+        raise NotImplementedError("This channel does not provide a balance query")
+
+    def query_balance(self, context):
+        if not self.manifest["capabilities"].get("balance_query"):
+            raise RequestParameterError("This channel does not declare balance_query")
+        return self.balance(context)
+
     def models(self, context):
         if not self.manifest["capabilities"].get("model_discovery"):
             return self.manifest.get("models", [])
@@ -407,6 +430,43 @@ class NativeProxy(Channel):
         except urllib.error.HTTPError as error:
             response = error
         return Response(response.status, list(response.headers.items()), response)
+
+
+class BalanceQueryError(Exception):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+class BalancePlugin(Channel):
+    protocol = "balance"
+
+    def read_balance(self, context, url):
+        if context.cancelled.is_set():
+            raise InterruptedError("Request cancelled")
+        headers = {**self.headers(context), "Accept": "application/json", "User-Agent": "Miora-Balance/1"}
+        proxy = context.request.get("proxy")
+        transport = urllib.request.build_opener(NativeProxy.NoRedirect(),
+            urllib.request.ProxyHandler({"http": proxy, "https": proxy}) if proxy else urllib.request.ProxyHandler())
+        request = urllib.request.Request(url, headers=headers, method="GET")
+        try:
+            with transport.open(request, timeout=6) as response:
+                content = response.read(262145)
+        except urllib.error.HTTPError as error:
+            code = error.code
+            error.close()
+            raise BalanceQueryError("access_denied" if code in (401, 403) else "rate_limited" if code == 429
+                else "redirect_blocked" if 300 <= code < 400 else "unsupported" if code in (404, 405) else "upstream_error") from None
+        except TimeoutError:
+            raise BalanceQueryError("timeout") from None
+        except urllib.error.URLError as error:
+            raise BalanceQueryError("timeout" if isinstance(error.reason, TimeoutError) else "network_error") from None
+        if len(content) > 262144:
+            raise BalanceQueryError("response_too_large")
+        try:
+            return json.loads(content)
+        except (ValueError, UnicodeError):
+            raise BalanceQueryError("invalid_response") from None
 
 
 def _watch_parent(parent):
@@ -491,9 +551,12 @@ def serve(channel):
                     self.json_response(413, {"error": {"message": "Plugin request exceeds body limit"}})
                     return
                 envelope = read_envelope(self.rfile, size, self.headers, resources)
-                context = Context(envelope.get("request", {}), envelope["channel"]["config"], envelope["channel"].get("name", ""), envelope.get("authentication", {}), resources=resources, request_schema=channel.manifest.get("request_schema", []))
+                context = Context(envelope.get("request", {}), envelope["channel"]["config"], envelope["channel"].get("name", ""), envelope.get("authentication", {}), resources=resources, request_schema=channel.manifest.get("request_schema", []), resolved_auth=envelope.get("resolved_auth", {}))
                 if self.path == "/models":
                     self.json_response(200, {"models": channel.models(context)})
+                    return
+                if self.path == "/balance":
+                    self.json_response(200, channel.query_balance(context))
                     return
                 if self.path == "/oauth":
                     self.json_response(200, channel.oauth_operation(context, envelope["oauth"]))
@@ -539,6 +602,9 @@ def serve(channel):
             except (BrokenPipeError, ConnectionResetError):
                 if context is not None:
                     context.cancelled.set()
+            except BalanceQueryError as error:
+                if not started:
+                    self.json_response(502, {"error": {"code": error.code}})
             except RequestParameterError as error:
                 if not started:
                     self.json_response(400, {"error": {"message": str(error), "type": "plugin_request_parameter"}})

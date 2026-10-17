@@ -8,6 +8,44 @@ use serde_json::{json, Value};
 
 type ApiResult = Result<Value, Response<Body>>;
 
+fn oauth_provider(state: &AppState, source: &Value) -> Option<String> {
+    let engine = source["engine"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| {
+            crate::config::compiler::infer_engine(source["base_url"].as_str().unwrap_or_default())
+        });
+    if let Some(id) = source["channel_plugin"]
+        .as_str()
+        .or_else(|| {
+            source
+                .pointer("/preferences/channel_plugin")
+                .and_then(Value::as_str)
+        })
+        .or_else(|| engine.strip_prefix("plugin:"))
+    {
+        state.plugins.core_oauth_provider(id)
+    } else {
+        matches!(engine.as_str(), "codex" | "claude" | "antigravity").then_some(engine)
+    }
+}
+
+async fn account_reference(
+    state: &AppState,
+    key: String,
+    provider: &str,
+) -> Result<String, Response<Body>> {
+    if provider == "codex" && (key.contains(',') || key.starts_with("core-oauth:")) {
+        state
+            .codex_oauth
+            .account_reference(&key, provider)
+            .await
+            .map_err(|message| error(StatusCode::BAD_REQUEST, "oauth_account_failed", &message))
+    } else {
+        Ok(key)
+    }
+}
+
 fn channel<'a>(config: &'a Value, name: &str) -> Result<&'a Value, Response<Body>> {
     config["providers"]
         .as_array()
@@ -56,7 +94,45 @@ pub(super) async fn list(state: &AppState, uri: &Uri) -> ApiResult {
     }
     if params.get("oauth").map(String::as_str) == Some("status") {
         let st = params.get("state").map(String::as_str).unwrap_or_default();
-        return Ok(state.codex_oauth.oauth_session_status(st).await);
+        let mut status = state.codex_oauth.oauth_session_status(st).await;
+        if let Some(key) = status["credential"].as_str() {
+            if !key.starts_with("oauth:") && key.contains(',') {
+                status["credential"] =
+                    json!(account_reference(state, key.to_owned(), "codex").await?);
+            }
+        }
+        return Ok(status);
+    }
+    if params.get("oauth").map(String::as_str) == Some("accounts") {
+        let (_, config) = management::source_config(state).await?;
+        let mut channels = std::collections::BTreeMap::<String, Vec<String>>::new();
+        for source in config["providers"].as_array().into_iter().flatten() {
+            if oauth_provider(state, source).as_deref() != Some("codex") {
+                continue;
+            }
+            let mut expanded = source.clone();
+            crate::config::compiler::expand_environment(&mut expanded);
+            for key in crate::config::snapshot::provider_api_keys(&expanded["api"]) {
+                if key.contains(',') || key.starts_with("core-oauth:") {
+                    let reference = account_reference(state, key, "codex").await?;
+                    channels
+                        .entry(reference)
+                        .or_default()
+                        .push(source["provider"].as_str().unwrap_or_default().to_owned());
+                }
+            }
+        }
+        let mut accounts =
+            state.codex_oauth.core_accounts().await.map_err(|message| {
+                error(StatusCode::BAD_REQUEST, "oauth_accounts_failed", &message)
+            })?;
+        for account in &mut accounts {
+            account["channels"] = json!(channels
+                .get(account["account_ref"].as_str().unwrap_or_default())
+                .cloned()
+                .unwrap_or_default());
+        }
+        return Ok(json!({"provider":"codex","accounts":accounts}));
     }
     let name = params.get("provider").cloned().unwrap_or_default();
     let (revision, config) = management::source_config(state).await?;
@@ -64,6 +140,7 @@ pub(super) async fn list(state: &AppState, uri: &Uri) -> ApiResult {
     let mut expanded = source.clone();
     crate::config::compiler::expand_environment(&mut expanded);
     let keys = crate::config::snapshot::provider_api_keys(&expanded["api"]);
+    let oauth_provider = oauth_provider(state, source);
     let engine = source["engine"]
         .as_str()
         .map(str::to_owned)
@@ -95,9 +172,7 @@ pub(super) async fn list(state: &AppState, uri: &Uri) -> ApiResult {
             .get(&(name.clone(), key.clone()))
             .copied()
             .unwrap_or(0);
-        let oauth = if matches!(engine.as_str(), "codex" | "claude" | "antigravity")
-            || key.starts_with("eyJ")
-        {
+        let oauth = if oauth_provider.is_some() {
             state.codex_oauth.status(key).await
         } else {
             Value::Null
@@ -112,7 +187,7 @@ pub(super) async fn list(state: &AppState, uri: &Uri) -> ApiResult {
         }));
     }
     Ok(
-        json!({"provider":name,"revision":revision,"engine":engine,"keys":rows,"failure_scope":"current_process","writable":true}),
+        json!({"provider":name,"revision":revision,"engine":engine,"oauth_provider":oauth_provider,"keys":rows,"failure_scope":"current_process","writable":true}),
     )
 }
 
@@ -143,6 +218,7 @@ struct Mutation {
     #[serde(default)]
     oauth_only: bool,
     import: Option<Value>,
+    account_refs: Option<Vec<String>>,
     oauth_exchange: Option<OAuthExchangeInput>,
 }
 
@@ -187,6 +263,7 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
             )
             .await
             .map_err(|message| error(StatusCode::BAD_GATEWAY, "oauth_exchange_failed", &message))?;
+        let raw_key = account_reference(state, raw_key, provider_hint).await?;
         let oauth = state.codex_oauth.status(&raw_key).await;
         return Ok(json!({"ok":true,"credential":raw_key,"oauth":oauth}));
     }
@@ -206,6 +283,7 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
         ));
     }
     let source = channel(&config, &input.provider)?;
+    let oauth_provider = oauth_provider(state, source);
     let engine = source["engine"]
         .as_str()
         .map(str::to_owned)
@@ -227,7 +305,7 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
                     "Key position not found",
                 )
             })?;
-        if !matches!(engine.as_str(), "codex" | "claude" | "antigravity") || !key.contains(',') {
+        if oauth_provider.is_none() || !(key.contains(',') || key.starts_with("core-oauth:")) {
             return Err(error(
                 StatusCode::BAD_REQUEST,
                 "oauth_unsupported",
@@ -257,14 +335,35 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
         .find(|row| row["provider"] == input.provider)
         .expect("selected channel");
     if method == Method::POST {
-        let imported = if let Some(exchange) = &input.oauth_exchange {
+        let account_provider = oauth_provider.as_deref().unwrap_or(&engine);
+        let imported = if let Some(references) = &input.account_refs {
+            if account_provider != "codex" {
+                return Err(error(
+                    StatusCode::BAD_REQUEST,
+                    "oauth_unsupported",
+                    "This channel does not use core Codex OAuth",
+                ));
+            }
+            let mut imported = Vec::new();
+            for reference in references {
+                if !reference.starts_with("core-oauth:") {
+                    return Err(error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_account_reference",
+                        "Select an existing core OAuth account",
+                    ));
+                }
+                imported.push(account_reference(state, reference.clone(), account_provider).await?);
+            }
+            imported
+        } else if let Some(exchange) = &input.oauth_exchange {
             let proxy = expanded
                 .pointer("/preferences/proxy")
                 .and_then(Value::as_str);
             let provider_hint = if !exchange.provider.is_empty() {
                 exchange.provider.as_str()
             } else {
-                engine.as_str()
+                account_provider
             };
             let raw_key = state
                 .codex_oauth
@@ -280,7 +379,7 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
                 .map_err(|message| {
                     error(StatusCode::BAD_GATEWAY, "oauth_exchange_failed", &message)
                 })?;
-            vec![raw_key]
+            vec![account_reference(state, raw_key, account_provider).await?]
         } else {
             let import_val = input.import.as_ref().ok_or_else(|| {
                 error(
@@ -289,9 +388,23 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
                     "Provide key strings or an account JSON document",
                 )
             })?;
-            import_accounts(state, import_val, &engine).await?
+            import_accounts(state, import_val, account_provider).await?
         };
         let mut existing = crate::config::snapshot::provider_api_keys(&row["api"]);
+        if input.account_refs.is_some() {
+            let mut non_core = Vec::new();
+            for key in existing {
+                let id = account_reference(state, key.clone(), account_provider).await?;
+                if !id.starts_with("core-oauth:") {
+                    non_core.push(key);
+                }
+            }
+            existing = non_core;
+        }
+        let mut identities = Vec::with_capacity(existing.len());
+        for key in &existing {
+            identities.push(account_reference(state, key.clone(), account_provider).await?);
+        }
         if existing.len() + imported.len() > 4096 {
             return Err(error(
                 StatusCode::BAD_REQUEST,
@@ -300,7 +413,8 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
             ));
         }
         for key in imported {
-            if !existing.contains(&key) {
+            if !identities.contains(&key) {
+                identities.push(key.clone());
                 existing.push(key);
             }
         }
@@ -388,7 +502,7 @@ async fn import_accounts(state: &AppState, value: &Value, engine: &str) -> ApiRe
                     )
                 })?;
         }
-        keys.push(key);
+        keys.push(account_reference(state, key, engine).await?);
     }
     Ok(keys)
 }

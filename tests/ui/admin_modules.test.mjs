@@ -361,7 +361,63 @@ await test('plugin upload: installed plugins and built-in adapters have separate
 });
 const parametersURL = dataURL((await source('parameters-editor.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)));
 const parameters = await import(parametersURL);
-const channel = await import(dataURL((await source('channel-editor.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)).replace("'./models-editor.js'", JSON.stringify(modelsURL)).replace("'./parameters-editor.js'", JSON.stringify(parametersURL)).replace("'./key-manager.js'", JSON.stringify(keyManagerURL))));
+const accountsURL = dataURL((await source('channel-accounts.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)));
+const accounts = await import(accountsURL);
+const balancesURL = dataURL((await source('channel-balances.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)));
+const channel = await import(dataURL((await source('channel-editor.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)).replace("'./models-editor.js'", JSON.stringify(modelsURL)).replace("'./parameters-editor.js'", JSON.stringify(parametersURL)).replace("'./key-manager.js'", JSON.stringify(keyManagerURL)).replace("'./channel-accounts.js'", JSON.stringify(accountsURL)).replace("'./channel-balances.js'", JSON.stringify(balancesURL))));
+await test('balance plugin choices are capability-driven and retain unavailable selections', () => {
+  const options = channel.balancePluginOptions([
+    { id: 'only-channel', manifest: { name: 'Channel', capabilities: { endpoints: ['/v1/chat/completions'] } } },
+    { id: 'custom', enabled: true, manifest: { name: 'Custom account', capabilities: { balance_query: true } } },
+    { id: 'off', enabled: false, manifest: { name: 'Disabled account', capabilities: { balance_query: true } } },
+  ], 'missing');
+  assert.deepEqual(options.map(option => option.value), ['', 'custom', 'off', 'missing']);
+  assert.match(options[2].label, /已停用/);
+  assert.match(options[3].label, /未安装/);
+});
+
+await test('core OAuth choice is explicit and does not change the channel execution engine', () => {
+  assert.equal(channel.coreOAuthProvider({ kind: 'builtin', value: 'builtin:codex' }), 'codex');
+  assert.equal(channel.coreOAuthProvider({ kind: 'service', plugin: { manifest: { auth: { type: 'core_oauth', provider: 'codex' } } } }), 'codex');
+  assert.equal(channel.coreOAuthProvider({ kind: 'service', plugin: { manifest: { auth: { type: 'bearer', provider: 'codex' } } } }), '');
+  assert.equal(channel.coreOAuthProvider({ kind: 'service', plugin: { manifest: { capabilities: { oauth: true } } } }), '');
+});
+await test('shared core account options escape metadata and use stable references without credentials', () => {
+  const html = accounts.coreAccountOptions([{ account_ref: 'core-oauth:codex:opaque', account_id: '<account>', email: '<img onerror="bad">', channels: ['text', '<images>'], expires_at: 1900000000 }], ['core-oauth:codex:opaque']);
+  assert.ok(html.includes('value="core-oauth:codex:opaque" checked'));
+  assert.ok(html.includes('&lt;img') && html.includes('&lt;images&gt;'));
+  assert.ok(!html.includes('<img') && !html.includes('access_token') && !html.includes('refresh_token'));
+});
+await test('core selector loads associations without rewriting a draft and preserves explicit selection on reload', async () => {
+  const nodes = { '[data-core-options]': { innerHTML: '' }, '[data-core-status]': { textContent: '' }, '[data-core-reload]': { addEventListener() {} } };
+  const events = new Map(), updates = [], calls = [];
+  const root = { innerHTML: '', querySelector: selector => nodes[selector], addEventListener: (name, fn) => events.set(name, fn), querySelectorAll: () => [{ value: 'core-oauth:codex:b' }] };
+  const create = runInNewContext((await source('channel-accounts.js')).replace(/^import .*;\r?\n/gm, '').replace(/^export /gm, '') + '\ncreateCoreAccountSelector', {
+    esc: ui.esc, AbortController,
+    api: { async get(path, options) { calls.push({ path, options }); return { accounts: [{ account_ref: 'core-oauth:codex:a', account_id: 'A', channels: ['images'] }, { account_ref: 'core-oauth:codex:b', account_id: 'B', channels: [] }] }; } },
+  });
+  const selector = create(root, { channel: 'images', onChange: value => updates.push([...value]) });
+  await selector.refresh();
+  assert.deepEqual([...selector.value()], ['core-oauth:codex:a']);
+  assert.equal(updates.length, 0);
+  events.get('change')({ target: { matches: () => true } });
+  assert.deepEqual(updates, [['core-oauth:codex:b']]);
+  await selector.refresh();
+  assert.deepEqual([...selector.value()], ['core-oauth:codex:b']);
+  assert.equal(updates.length, 1);
+  assert.equal(calls[0].path, '/channels/keys?oauth=accounts&provider=codex');
+  selector.destroy();
+  assert.equal(calls[0].options.signal.aborted, true);
+});
+await test('core plugin draft keeps multiple account references as an array rather than an API key string', async () => {
+  const editor = await source('channel-editor.js');
+  const connection = editor.slice(editor.indexOf('  function connection('), editor.indexOf('  function draftChannel('));
+  const references = ['core-oauth:codex:a', 'core-oauth:codex:b'];
+  const draft = runInNewContext(connection + '\nconnection', { selected: 'service:images', selectedCoreAccounts: references, getType: () => ({ kind: 'service' }), coreOAuthProvider: () => 'codex', form: {}, schema: [], savedPluginConfig: {}, readSchema: () => ({}) })();
+  assert.equal(draft.channel_plugin, 'images');
+  assert.equal(draft.engine, undefined);
+  assert.deepEqual([...draft.api], references);
+});
 await test('plugin declared request fields drive JSON preview forms without pretending to upload resource references', () => {
   const fields = [{ key: 'vendorStyle', label: '风格', type: 'string', enum: ['ink', 'photo'] }, { key: 'seed', type: 'integer', default: 42 }, { key: 'image', type: 'resource' }];
   const schema = channel.pluginRequestSchema({ manifest: { request_schema: fields } });
@@ -494,11 +550,11 @@ await test('channel editor close callback can access its OAuth timer outside onM
 await test('channel draft reuses validated models and parses parameter policy only once', async () => {
   const editorSource = await source('channel-editor.js');
   const draftSource = editorSource.slice(editorSource.indexOf('  function draftChannel('), editorSource.indexOf('  function dto('));
-  const elements = { extra: { value: '{}' }, protocol_mode: { value: 'auto' }, channel_groups: { value: 'default' }, allow_byok: { checked: false }, retry_empty: { checked: false }, reasoning_history: { value: 'preserve' }, unsigned_thinking: { value: 'preserve' }, reasoning_suffixes: { checked: false } };
+  const elements = { balance_query: { value: 'auto' }, balance_plugin: { value: '' }, extra: { value: '{}' }, protocol_mode: { value: 'auto' }, channel_groups: { value: 'default' }, allow_byok: { checked: false }, retry_empty: { checked: false }, reasoning_history: { value: 'preserve' }, unsigned_thinking: { value: 'preserve' }, reasoning_suffixes: { checked: false } };
   let policyReads = 0, modelReads = 0, rejected = false;
-  const tabs = [], policy = { defaults: { temperature: .5 } }, model = ['public'];
+  const tabs = [], policy = { defaults: { temperature: .5 } }, model = ['public'], config = {};
   const draft = runInNewContext(draftSource + '\ndraftChannel', {
-    form: { elements }, parseJSON: ui.parseJSON, parseGroups: keyManager.parseGroups, config: {}, connection: () => ({ engine: 'gpt' }),
+    form: { elements }, parseJSON: ui.parseJSON, parseGroups: keyManager.parseGroups, config, connection: () => ({ engine: 'gpt' }),
     parametersEditor: { value() { policyReads++; if (rejected) throw new Error('invalid policy'); return policy; } },
     modelsEditor: { snapshot() { modelReads++; return []; }, pricing: () => ({ models: { public: { input: 2 } } }) }, rowsToModels: models.rowsToModels,
     activateTab: tab => tabs.push(tab),
@@ -509,10 +565,26 @@ await test('channel draft reuses validated models and parses parameter policy on
   assert.deepEqual(result.preferences.usage_pricing, { models: { public: { input: 2 } } });
   assert.equal(policyReads, 1);
   assert.equal(modelReads, 0);
+  assert.equal(result.preferences.balance_query, true);
+  elements.balance_plugin.value = 'custom-balance';
+  assert.equal(draft({ validate: true, model }).preferences.balance_plugin, 'custom-balance');
+  elements.balance_plugin.value = '';
+  assert.equal(draft({ validate: true, model }).preferences.balance_plugin, null);
+  config.preferences = { balance_query: 'novelai' };
+  assert.equal(draft({ validate: true, model }).preferences.balance_query, 'novelai');
+  elements.balance_query.value = 'off';
+  assert.equal(draft({ validate: true, model }).preferences.balance_query, false);
   assert.equal((editorSource.match(/parametersEditor\.value\(\)/g) || []).length, 1);
   rejected = true;
   assert.throws(() => draft({ validate: true, model }), /invalid policy/);
   assert.deepEqual(tabs, ['parameters']);
+});
+
+await test('balance settings use channel capabilities instead of a supplier menu', async () => {
+  const editorSource = await source('channel-editor.js');
+  const control = editorSource.split('\n').find(line => line.includes("select('balance_query'"));
+  assert.deepEqual([...control.matchAll(/value: '([^']+)'/g)].map(match => match[1]), ['auto', 'off']);
+  assert.match(control, /使用渠道 \/ 插件提供的能力/);
 });
 
 await test('system settings distinguish persistent saves from read-only remote sources', async () => {
@@ -1163,7 +1235,7 @@ await test('channel filters restore URL search and type with escaped input marku
   const query = 'Alpha " <img>';
   const params = new URLSearchParams({ q: query, type: 'gpt' });
   const render = runInNewContext(text.slice(text.indexOf('async function channels('), text.indexOf('async function editChannel(')) + '\nchannels', {
-    read: async path => { assert.equal(path, '/channels'); return { channels: [{ engine: 'gpt' }], writable: true }; }, state: {},
+    read: async path => { assert.equal(path, '/channels'); return { channels: [{ engine: 'gpt' }], writable: true }; }, state: {}, api: { get: async path => { assert.equal(path, '/channels/balances'); return { balances: {} }; } },
     window: { location: { hash: `#channels?${params}` } }, URLSearchParams,
     head: () => '', button: () => '', icon: icons.icon, esc: ui.esc, fmt: ui.fmt, select: ui.select,
     table: () => '', channelRows: () => '', empty: ui.empty,

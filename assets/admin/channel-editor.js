@@ -1,11 +1,18 @@
 import * as api from './api.js';
 import { parseGroups } from './key-manager.js';
 import { icon, aiIcon, channelBrand } from './icons.js';
+import { mountChannelBalance } from './channel-balances.js';
 import { esc, fmt, notice, field, select, checkbox, parseJSON, schemaFields, readSchema, jsonDetails, toast, dialog } from './ui.js';
 import { createModelsEditor, rowsToModels } from './models-editor.js';
 import { createParametersEditor } from './parameters-editor.js';
+import { createCoreAccountSelector } from './channel-accounts.js';
 
 const array = value => Array.isArray(value) ? value : [];
+export function coreOAuthProvider(type) {
+  if (type?.kind === 'service') return type.plugin?.manifest?.auth?.type === 'core_oauth' ? type.plugin.manifest.auth.provider : '';
+  const engine = type?.value?.slice('builtin:'.length);
+  return ['codex', 'claude', 'antigravity'].includes(engine) ? engine : '';
+}
 export function pluginRequestSchema(plugin) {
   return array(plugin?.manifest?.request_schema).filter(field => field.type !== 'resource');
 }
@@ -16,6 +23,11 @@ export function canPreview(capabilities, endpoint) {
   return capabilities?.body_supported === true && capabilities.preview_supported !== false && array(capabilities.endpoints).includes(endpoint);
 }
 export function shouldSendBaseURL(existing, value, savedURL) { return Boolean(value) && (!existing || value !== savedURL); }
+export function balancePluginOptions(plugins, selected = '') {
+  const options = [{ value: '', label: '自动匹配已安装插件' }, ...plugins.filter(plugin => plugin.manifest?.capabilities?.balance_query).map(plugin => ({ value: plugin.id, label: `${plugin.manifest.name || plugin.id}${plugin.enabled === false ? '（已停用）' : ''}` }))];
+  if (selected && !options.some(option => option.value === selected)) options.push({ value: selected, label: `${selected}（未安装）` });
+  return options;
+}
 export function pluginConfigValues(plugin, saved = {}) {
   const values = { ...(plugin?.config || {}), ...saved };
   for (const [key, source] of Object.entries(plugin?.manifest?.config_aliases || {})) {
@@ -76,7 +88,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
   const savedPluginConfig = config.plugin_config || config.preferences?.plugin_config || {};
   const savedEngine = config.engine || existing?.engine || '';
   const savedURL = config.base_url || existing?.base_url || '';
-  const types = plugins.filter(plugin => ['builtin', 'service', 'managed'].includes(plugin.kind)).map(plugin => ({
+  const types = plugins.filter(plugin => ['builtin', 'service', 'managed'].includes(plugin.kind) && (plugin.kind === 'builtin' || array(plugin.manifest?.capabilities?.endpoints).length || plugin.manifest?.native_proxy)).map(plugin => ({
     value: plugin.kind !== 'builtin' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`,
     label: `${plugin.manifest?.name || plugin.id}${plugin.kind !== 'builtin' && !plugin.enabled ? '（已停用）' : ''}`,
     kind: plugin.kind === 'builtin' ? 'builtin' : 'service', plugin,
@@ -94,6 +106,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
   let schemaController, previewController, schemaSequence = 0, previewSequence = 0;
   let closed = false, sampleEdited = false, previewExists = false;
   let currentAuthMode = 'oauth', oauthSession = null, oauthPollTimer = null;
+  let coreSelector, balancePanel, selectedCoreAccounts = null;
 
   function connection({ validate = false, forCapabilities = false } = {}) {
     if (!selected) throw new Error('请先选择渠道类型。');
@@ -113,15 +126,18 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       if (shouldSendBaseURL(existing, value, savedURL)) channel.base_url = value;
       if (form.elements.api.value) channel.api = form.elements.api.value;
     }
+    if (coreOAuthProvider(getType()) === 'codex' && selectedCoreAccounts !== null) channel.api = selectedCoreAccounts;
     return channel;
   }
   function draftChannel({ validate = false, forCapabilities = false, model } = {}) {
     const extra = parseJSON(form.elements.extra.value || '{}', '附加配置');
     for (const key of ['provider', 'base_url', 'model', 'api', 'engine', 'channel_plugin', 'plugin_config', 'groups']) if (Object.hasOwn(extra, key)) throw new Error(`${key} 请使用对应表单配置。`);
     if (extra.preferences !== undefined && (extra.preferences === null || typeof extra.preferences !== 'object' || Array.isArray(extra.preferences))) throw new Error('preferences 必须是对象。');
-    if (extra.preferences && ['parameter_policy', 'protocol_mode', 'usage_pricing'].some(key => Object.hasOwn(extra.preferences, key))) throw new Error('协议模式、计价和参数策略请使用对应表单，避免草稿互相覆盖。');
+    if (extra.preferences && ['parameter_policy', 'protocol_mode', 'usage_pricing', 'balance_query', 'balance_plugin'].some(key => Object.hasOwn(extra.preferences, key))) throw new Error('协议模式、计价、余额和参数策略请使用对应表单，避免草稿互相覆盖。');
     const channel = { ...extra, ...connection({ validate, forCapabilities }), groups: parseGroups(form.elements.channel_groups.value), preferences: { ...(extra.preferences || {}), protocol_mode: form.elements.protocol_mode.value } };
     channel.preferences.allow_byok = form.elements.allow_byok.checked;
+    channel.preferences.balance_query = form.elements.balance_query.value === 'off' ? false : typeof config.preferences?.balance_query === 'string' ? config.preferences.balance_query : true;
+    channel.preferences.balance_plugin = form.elements.balance_plugin.value || null;
     channel.preferences.response_policy = { ...(config.preferences?.response_policy || {}), retry_empty: form.elements.retry_empty.checked };
     channel.preferences.reasoning_history = form.elements.reasoning_history.value;
     channel.preferences.unsigned_thinking = form.elements.unsigned_thinking.value;
@@ -217,6 +233,17 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       `<section id="channel-preview" class="channel-preview"><div class="parameter-section-heading"><div><h3>请求预览</h3></div><button type="button" class="button" data-channel-action="refresh-schema">${icon('refresh')}刷新能力</button></div><div class="preview-request-controls">${select('preview_endpoint', '请求端点', initialEndpoints.length ? initialEndpoints.map(path => ({ value: path, label: `${endpointLabel(path)} · ${path}` })) : [{ value: '', label: '正在读取可用端点' }], initialEndpoint)}${select('preview_model', '公开模型 / 别名', [{ value: '', label: '请先在模型页添加模型' }])}</div>${checkbox('preview_stream', '流式请求预览')}<p class="channel-preview-capability hint" role="status"></p><details class="advanced"><summary>示例请求体</summary>${field('preview_body', '示例 Payload', JSON.stringify(sampleBody(initialEndpoint), null, 2), { type: 'textarea', rows: 5 })}</details><div class="preview-actions"><button type="button" class="button primary" data-channel-action="preview" disabled>${icon('eye')}构造预览</button><span class="channel-preview-stale hint" role="status"></span></div><div class="notice danger channel-preview-error" role="alert" hidden></div><div class="channel-preview-result" hidden></div></section>`,
     onMount: mounted => {
       form = mounted;
+      form.querySelector('#channel-schema').insertAdjacentHTML('beforebegin', select('balance_query', '余额查询', [{ value: 'auto', label: '使用渠道 / 插件提供的能力' }, { value: 'off', label: '关闭余额查询' }], config.preferences?.balance_query === false ? 'off' : 'auto'));
+      form.querySelector('#channel-schema').insertAdjacentHTML('beforebegin', select('balance_plugin', '余额插件', balancePluginOptions(plugins, config.preferences?.balance_plugin), config.preferences?.balance_plugin || ''));
+      if (existing) {
+        form.querySelector('#channel-preview').insertAdjacentHTML('beforebegin', '<section class="channel-balance-panel" data-channel-balance></section>');
+        balancePanel = mountChannelBalance(form.querySelector('[data-channel-balance]'), existing.provider);
+      }
+      form.querySelector('#channel-oauth-helper').insertAdjacentHTML('beforebegin', '<section class="form-section" data-channel-core-accounts hidden></section>');
+      coreSelector = createCoreAccountSelector(form.querySelector('[data-channel-core-accounts]'), {
+        channel: existing?.provider || '',
+        onChange: references => { selectedCoreAccounts = references; markStale(); },
+      });
       form.noValidate = true;
       form.querySelector('.preview-request-controls').insertAdjacentHTML('afterend', '<section id="plugin-request-fields" class="schema-fields" hidden></section>');
       form.insertBefore(form.querySelector('.channel-tabs'), form.querySelector('.dialog-body'));
@@ -249,8 +276,12 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         const requestFields = form.querySelector('#plugin-request-fields');
         requestFields.hidden = !service || !type?.plugin?.manifest?.request_schema?.length;
         requestFields.innerHTML = service ? `<h3>插件请求参数</h3>${schemaFields(pluginRequestSchema(type.plugin), {}, 'request')}${type.plugin.manifest.request_schema?.some(field => field.type === 'resource') ? '<p class="hint">文件参数通过 multipart 上传；JSON 预览不上传文件。</p>' : ''}` : '';
-        form.querySelector('#channel-builtin-fields').hidden = Boolean(service);
+        const oauthProvider = coreOAuthProvider(type);
+        form.querySelector('#channel-builtin-fields').hidden = Boolean(service) && !oauthProvider;
         form.elements.base_url.disabled = Boolean(service); form.elements.api.disabled = Boolean(service); form.elements.base_url.required = !service;
+        const coreAccounts = form.querySelector('[data-channel-core-accounts]');
+        coreAccounts.hidden = oauthProvider !== 'codex';
+        if (!coreAccounts.hidden) coreSelector.refresh();
         schemaRoot.hidden = !service;
         if (service) {
           let fields = schemaDrafts.get(selected);
@@ -261,7 +292,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
           schemaRoot.replaceChildren(fields);
         } else { schemaRoot.replaceChildren(); if (!urlEdited) form.elements.base_url.value = type?.plugin?.manifest?.default_base_url || ''; }
         const oauthHelper = form.querySelector('#channel-oauth-helper');
-        const isOAuthChannel = ['builtin:codex', 'builtin:claude', 'builtin:antigravity'].includes(selected);
+        const isOAuthChannel = Boolean(oauthProvider);
         if (oauthHelper) oauthHelper.hidden = !isOAuthChannel;
         syncAuthModeUI();
         const changed = previousType !== selected;
@@ -275,8 +306,11 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       };
       const manualCredFields = form.querySelector('#channel-manual-cred-fields');
       function syncAuthModeUI() {
-        const isOAuthChannel = ['builtin:codex', 'builtin:claude', 'builtin:antigravity'].includes(selected);
+        const isOAuthChannel = Boolean(coreOAuthProvider(getType()));
+        const managedOAuth = getType()?.kind === 'service' && isOAuthChannel;
+        if (managedOAuth && currentAuthMode === 'apikey') currentAuthMode = 'oauth';
         form.querySelectorAll('[data-auth-mode]').forEach(btn => {
+          btn.disabled = managedOAuth && btn.dataset.authMode === 'apikey';
           const active = btn.dataset.authMode === currentAuthMode;
           btn.classList.toggle('primary', active);
           btn.setAttribute('aria-pressed', String(active));
@@ -316,7 +350,8 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       const oauthFlow = form.querySelector('[data-channel-oauth-flow]');
       function applyLoggedAccount({ credential, email, plan, accountId }) {
         form.elements.api.value = credential || '';
-        const engine = selected.slice('builtin:'.length) || 'codex';
+        const engine = coreOAuthProvider(getType());
+        if (engine === 'codex' && credential?.startsWith('core-oauth:')) coreSelector.setSelection([...coreSelector.value(), credential]);
         if (!existing && !form.elements.provider.value.trim()) {
           const prefix = email ? email.split('@')[0].replace(/[^a-zA-Z0-9_-]/g, '') : '';
           form.elements.provider.value = prefix ? `${engine}-${prefix}` : `${engine}-account`;
@@ -339,7 +374,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       form.querySelector('[data-channel-oauth-start]')?.addEventListener('click', async () => {
         try {
           clearInterval(oauthPollTimer);
-          const engine = selected.slice('builtin:'.length) || 'codex';
+          const engine = coreOAuthProvider(getType());
           oauthSession = await api.get(`/channels/keys?${new URLSearchParams({ oauth: 'authorize', provider: engine })}`);
           if (!oauthFlow) return;
           form.querySelector('[data-channel-oauth-url]').value = oauthSession.authorize_url;
@@ -376,7 +411,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         if (!code) { if (statusEl) statusEl.textContent = '请先粘贴登录回调 URL 或授权码。'; return; }
         try {
           clearInterval(oauthPollTimer);
-          const engine = selected.slice('builtin:'.length) || 'codex';
+          const engine = coreOAuthProvider(getType());
           if (statusEl) statusEl.textContent = '正在向认证服务换取 Token 并解析账号邮箱…';
           const res = await api.post('/channels/keys', {
             oauth_only: true,
@@ -399,12 +434,18 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         const file = authFileInput.files?.[0];
         if (!file || !statusEl) return;
         try {
-          const engine = selected.slice('builtin:'.length);
+          const engine = coreOAuthProvider(getType());
           if (file.size > 128 * 1024) throw new Error('凭据文件不能超过 128 KiB');
           const text = await file.text();
           const parsed = extractAccountFromJson(text, engine);
           const result = await api.post('/channels/keys', { oauth_only: true, provider: engine, import: JSON.parse(text) });
-          applyLoggedAccount({ ...parsed, credential: result.credentials.join('\n') });
+          if (engine === 'codex' && getType()?.kind === 'service' && result.credentials.some(reference => !reference.startsWith('core-oauth:'))) throw new Error('核心托管插件需要含 refresh token 的账号，不能只导入短期 AT。');
+          applyLoggedAccount({ ...parsed, credential: engine === 'codex' ? result.credentials[0] : result.credentials.join('\n') });
+          if (engine === 'codex') {
+            const references = [...new Set([...coreSelector.value(), ...result.credentials])];
+            if (references.every(reference => reference.startsWith('core-oauth:'))) coreSelector.setSelection(references);
+            else selectedCoreAccounts = references;
+          }
         } catch (err) {
           statusEl.textContent = `解析失败：${err.message}`;
         }
@@ -486,7 +527,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       form.querySelector('[data-channel-action="preview"]').addEventListener('click', preview);
       activateTab('basic'); refreshCapabilities();
     },
-    onClose: () => { closed = true; clearInterval(oauthPollTimer); schemaSequence++; previewSequence++; schemaController?.abort(); previewController?.abort(); modelsEditor?.destroy(); parametersEditor?.destroy(); },
+    onClose: () => { closed = true; clearInterval(oauthPollTimer); schemaSequence++; previewSequence++; schemaController?.abort(); previewController?.abort(); modelsEditor?.destroy(); parametersEditor?.destroy(); coreSelector?.destroy(); balancePanel?.destroy(); },
     onSubmit: async () => {
       let model;
       try { model = modelsEditor.value(); } catch (error) { activateTab('models'); throw error; }

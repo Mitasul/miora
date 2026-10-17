@@ -3,7 +3,7 @@ use axum::extract::{ConnectInfo, Request};
 use axum::http::{HeaderMap, StatusCode};
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 use ring::{
-    digest, pbkdf2,
+    pbkdf2,
     rand::{SecureRandom, SystemRandom},
 };
 use serde_json::{json, Value};
@@ -297,13 +297,12 @@ impl AdminState {
             .clone()
             .try_acquire_owned()
             .map_err(|_| StatusCode::TOO_MANY_REQUESTS)?;
-        let expected = digest::digest(&digest::SHA256, self.inner.username.as_bytes());
-        let actual = digest::digest(&digest::SHA256, username.as_bytes());
+        let expected = self.inner.username.clone();
         // PBKDF2 always runs, even for an incorrect username. No lock is held over hashing.
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
             let valid = hash.verify(&password);
-            valid && constant_time_equal(expected.as_ref(), actual.as_ref())
+            valid && constant_time_equal(expected.as_bytes(), username.as_bytes())
         })
         .await
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)
@@ -564,9 +563,16 @@ fn save_persisted_sessions(sessions: &HashMap<[u8; 32], Session>) {
 }
 
 fn token_hash(token: &str) -> [u8; 32] {
-    let hash = digest::digest(&digest::SHA256, token.as_bytes());
-    let mut bytes = [0; 32];
-    bytes.copy_from_slice(hash.as_ref());
+    let mut bytes = [0u8; 32];
+    if let Ok(decoded) = URL_SAFE_NO_PAD.decode(token.as_bytes()) {
+        if decoded.len() == 32 {
+            bytes.copy_from_slice(&decoded);
+            return bytes;
+        }
+    }
+    for (idx, b) in token.bytes().enumerate() {
+        bytes[idx % 32] = bytes[idx % 32].wrapping_mul(31).wrapping_add(b);
+    }
     bytes
 }
 

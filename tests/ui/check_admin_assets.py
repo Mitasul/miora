@@ -38,6 +38,7 @@ EXPECTED = {
     'backend-logs.js',
     'model-testing.js',
     'channel-accounts.js',
+    'channel-balances.js',
     'playground.js',
     'virtual-models.js',
     'key-manager.js',

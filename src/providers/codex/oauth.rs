@@ -7,6 +7,9 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
 
+mod accounts;
+pub(crate) use accounts::ResolvedOAuth;
+
 const DEFAULT_AUTHORIZE_URL: &str = "https://auth.openai.com/oauth/authorize";
 const DEFAULT_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 const DEFAULT_REDIRECT_URI: &str = "http://localhost:1455/auth/callback";
@@ -55,6 +58,8 @@ pub struct CodexOAuthManager {
     token_url: Arc<str>,
     client_id: Arc<str>,
     refresh_skew: Duration,
+    #[cfg(test)]
+    refresh_fixture: Option<Arc<accounts::RefreshFixture>>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -70,6 +75,7 @@ struct CachedToken {
 #[derive(Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[serde(untagged)]
 enum SavedToken {
+    Reference { account_ref: String },
     Legacy(String),
     Account(CachedToken),
 }
@@ -83,6 +89,7 @@ impl From<&str> for SavedToken {
 pub struct CodexAuth {
     pub bearer: String,
     pub account_id: Option<String>,
+    pub expires_at: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -117,6 +124,8 @@ impl CodexOAuthManager {
                 .unwrap_or_else(|_| DEFAULT_CLIENT_ID.into())
                 .into(),
             refresh_skew: Duration::from_secs(30),
+            #[cfg(test)]
+            refresh_fixture: None,
         }
     }
 
@@ -497,8 +506,13 @@ impl CodexOAuthManager {
             cached.access_token.clone()
         };
         if !cached.refresh_token.is_empty() {
-            self.persist_token_record(&raw_key, SavedToken::Account(cached.clone()))
+            self.publish_imported_token(&raw_key, cached.clone())
                 .await?;
+        } else {
+            self.cache
+                .lock()
+                .await
+                .insert(raw_key.clone(), cached.clone());
         }
         self.metadata.lock().await.insert(
             raw_key.clone(),
@@ -509,7 +523,6 @@ impl CodexOAuthManager {
                 expires_at: cached.expires_at,
             },
         );
-        self.cache.lock().await.insert(raw_key.clone(), cached);
         if let Some(st) = state_val {
             if let Some(entry) = self.sessions.lock().await.get_mut(&st) {
                 entry.credential = Some(raw_key.clone());
@@ -580,7 +593,7 @@ impl CodexOAuthManager {
                 .and_then(Value::as_str)
                 .unwrap_or_default()
                 .to_owned();
-            if access_token.is_empty() {
+            if access_token.is_empty() && credential.provider != OAuthProvider::Codex {
                 self.persist_token_record(raw_key, SavedToken::Legacy(credential.refresh_token))
                     .await?;
             } else {
@@ -592,9 +605,7 @@ impl CodexOAuthManager {
                     plan_type: plan_type.clone(),
                     account_id: account_id.clone(),
                 };
-                self.persist_token_record(raw_key, SavedToken::Account(token.clone()))
-                    .await?;
-                self.cache.lock().await.insert(raw_key.to_owned(), token);
+                self.publish_imported_token(raw_key, token).await?;
             }
         }
         if email.is_some() || plan_type.is_some() || account_id.is_some() || expires_at.is_some() {
@@ -624,19 +635,20 @@ impl CodexOAuthManager {
     }
 
     pub(crate) async fn status(&self, raw_key: &str) -> Value {
-        if let Err(error) = self.ensure_store_loaded().await {
-            return serde_json::json!({"error":error});
-        }
+        let stored_key = match self.stored_key(raw_key).await {
+            Ok(key) => key,
+            Err(error) => return serde_json::json!({"error":error}),
+        };
         let saved = self
             .persisted
             .lock()
             .await
             .as_ref()
-            .and_then(|tokens| tokens.get(raw_key))
+            .and_then(|tokens| tokens.get(&stored_key))
             .cloned();
         let cached = self.cache.lock().await;
         let meta_map = self.metadata.lock().await;
-        let token = cached.get(raw_key).or(match &saved {
+        let token = cached.get(&stored_key).or(match &saved {
             Some(SavedToken::Account(token)) => Some(token),
             _ => None,
         });
@@ -647,7 +659,8 @@ impl CodexOAuthManager {
             AccountMetadata::default()
         };
         let credential = split_refresh_key(raw_key).ok().flatten();
-        let refreshable = credential.is_some();
+        let refreshable =
+            credential.is_some() || stored_key.starts_with(accounts::CODEX_ACCOUNT_PREFIX);
         let split_account = credential.and_then(|credential| credential.account_id);
         let account = token
             .and_then(|t| t.account_id.clone())
@@ -667,6 +680,7 @@ impl CodexOAuthManager {
             .or_else(|| meta.and_then(|m| m.expires_at))
             .or(jwt_meta.expires_at);
         serde_json::json!({
+            "account_ref": stored_key.starts_with(accounts::CODEX_ACCOUNT_PREFIX).then_some(&stored_key),
             "refreshable": refreshable,
             "account_id": account,
             "email": email,
@@ -682,30 +696,44 @@ impl CodexOAuthManager {
         proxy: Option<&str>,
         force: bool,
     ) -> Result<CodexAuth, String> {
-        let raw = raw_key.trim();
+        let raw_key = raw_key.trim();
+        let credential = split_refresh_key(raw_key)?;
+        let core = raw_key.starts_with("core-oauth:")
+            || credential
+                .as_ref()
+                .is_some_and(|credential| credential.provider == OAuthProvider::Codex);
+        let stored_key;
+        let credential = if core {
+            stored_key = self.account_reference(raw_key, "codex").await?;
+            Some(RefreshCredential {
+                provider: OAuthProvider::Codex,
+                account_id: None,
+                refresh_token: String::new(),
+            })
+        } else {
+            stored_key = raw_key.to_owned();
+            credential
+        };
+        let raw = stored_key.as_str();
         let Some(RefreshCredential {
             provider,
             account_id,
             refresh_token: configured_refresh,
-        }) = split_refresh_key(raw)?
+        }) = credential
         else {
             return Ok(CodexAuth {
                 bearer: raw.to_owned(),
                 account_id: None,
+                expires_at: None,
             });
         };
-        let lock = {
-            let mut locks = self.locks.lock().await;
-            locks
-                .entry(raw.to_owned())
-                .or_insert_with(|| Arc::new(Mutex::new(())))
-                .clone()
-        };
+        let lock = self.refresh_lock(raw).await;
         let _guard = lock.lock().await;
         if let Some(token) = self.cache.lock().await.get(raw).cloned() {
             if !force && token_is_valid(&token, self.refresh_skew) {
                 return Ok(CodexAuth {
                     bearer: token.access_token,
+                    expires_at: token.expires_at,
                     account_id: if provider == OAuthProvider::Codex {
                         account_id.or(token.account_id)
                     } else {
@@ -730,6 +758,7 @@ impl CodexOAuthManager {
                     .insert(raw.to_owned(), token.clone());
                 return Ok(CodexAuth {
                     bearer: token.access_token.clone(),
+                    expires_at: token.expires_at,
                     account_id: if provider == OAuthProvider::Codex {
                         account_id.or_else(|| token.account_id.clone())
                     } else {
@@ -745,9 +774,10 @@ impl CodexOAuthManager {
             .get(raw)
             .map(|token| token.refresh_token.clone())
             .or_else(|| {
-                persisted.as_ref().map(|token| match token {
-                    SavedToken::Legacy(refresh) => refresh.clone(),
-                    SavedToken::Account(token) => token.refresh_token.clone(),
+                persisted.as_ref().and_then(|token| match token {
+                    SavedToken::Legacy(refresh) => Some(refresh.clone()),
+                    SavedToken::Account(token) => Some(token.refresh_token.clone()),
+                    SavedToken::Reference { .. } => None,
                 })
             })
             .unwrap_or(configured_refresh);
@@ -775,6 +805,7 @@ impl CodexOAuthManager {
             .insert(raw.to_owned(), refreshed.clone());
         Ok(CodexAuth {
             bearer: refreshed.access_token,
+            expires_at: refreshed.expires_at,
             account_id: if provider == OAuthProvider::Codex {
                 account_id.or(refreshed.account_id)
             } else {
@@ -784,7 +815,9 @@ impl CodexOAuthManager {
     }
 
     pub async fn clear(&self, raw_key: &str) {
-        self.cache.lock().await.remove(raw_key);
+        if let Ok(key) = self.stored_key(raw_key).await {
+            self.cache.lock().await.remove(&key);
+        }
     }
 
     async fn refresh(
@@ -793,6 +826,14 @@ impl CodexOAuthManager {
         provider: OAuthProvider,
         refresh_token: &str,
     ) -> Result<CachedToken, String> {
+        #[cfg(test)]
+        if let Some(fixture) = &self.refresh_fixture {
+            fixture
+                .calls
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            return fixture.result.clone();
+        }
         let response = self
             .refresh_request(client, provider, refresh_token)
             .send()
@@ -863,11 +904,12 @@ impl CodexOAuthManager {
 
     #[cfg(test)]
     async fn persisted_refresh_token(&self, raw_key: &str) -> Option<String> {
-        self.ensure_store_loaded().await.ok()?;
+        let stored_key = self.stored_key(raw_key).await.ok()?;
         self.persisted.lock().await.as_ref().and_then(|tokens| {
-            tokens.get(raw_key).map(|token| match token {
-                SavedToken::Legacy(refresh) => refresh.clone(),
-                SavedToken::Account(token) => token.refresh_token.clone(),
+            tokens.get(&stored_key).and_then(|token| match token {
+                SavedToken::Legacy(refresh) => Some(refresh.clone()),
+                SavedToken::Account(token) => Some(token.refresh_token.clone()),
+                SavedToken::Reference { .. } => None,
             })
         })
     }
@@ -886,11 +928,21 @@ impl CodexOAuthManager {
         self.ensure_store_loaded().await?;
         let mut persisted = self.persisted.lock().await;
         let values = persisted.get_or_insert_with(HashMap::new);
+        let raw_key = match values.get(raw_key) {
+            Some(SavedToken::Reference { account_ref }) => account_ref.as_str(),
+            _ => raw_key,
+        };
         if values.get(raw_key).is_some_and(|value| value == &token) {
             return Ok(());
         }
         let mut updated = values.clone();
         updated.insert(raw_key.to_owned(), token);
+        self.write_token_store(&updated).await?;
+        *persisted = Some(updated);
+        Ok(())
+    }
+
+    async fn write_token_store(&self, updated: &HashMap<String, SavedToken>) -> Result<(), String> {
         let encoded = serde_json::to_vec_pretty(&updated)
             .map_err(|error| format!("encode OAuth credential store: {error}"))?;
         if let Some(parent) = self.store_path.parent() {
@@ -898,9 +950,12 @@ impl CodexOAuthManager {
                 .await
                 .map_err(|error| format!("create OAuth store directory: {error}"))?;
         }
-        let temporary = self
-            .store_path
-            .with_extension(format!("tmp.{}", std::process::id()));
+        static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let temporary = self.store_path.with_extension(format!(
+            "tmp.{}.{}",
+            std::process::id(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         tokio::fs::write(&temporary, encoded)
             .await
             .map_err(|error| format!("write OAuth credential store: {error}"))?;
@@ -911,10 +966,10 @@ impl CodexOAuthManager {
                 .await
                 .map_err(|error| format!("restrict OAuth credential store: {error}"))?;
         }
-        tokio::fs::rename(&temporary, self.store_path.as_ref())
-            .await
-            .map_err(|error| format!("publish OAuth credential store: {error}"))?;
-        *persisted = Some(updated);
+        if let Err(error) = tokio::fs::rename(&temporary, self.store_path.as_ref()).await {
+            let _ = tokio::fs::remove_file(&temporary).await;
+            return Err(format!("publish OAuth credential store: {error}"));
+        }
         Ok(())
     }
 
@@ -1113,17 +1168,23 @@ fn unix_seconds() -> u64 {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn migration_compat_imported_accounts_and_rotated_tokens_survive_restart_without_network()
-    {
-        let directory = std::env::temp_dir().join(format!(
-            "miora-migration-oauth-{}-{}",
+    fn temp_store_dir(prefix: &str) -> PathBuf {
+        static SEQUENCE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
-        ));
+                .as_nanos(),
+            SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ))
+    }
+
+    #[tokio::test]
+    async fn migration_compat_imported_accounts_and_rotated_tokens_survive_restart_without_network()
+    {
+        let directory = temp_store_dir("miora-migration-oauth");
         let store = Arc::new(directory.join("tokens.json"));
         let manager = CodexOAuthManager {
             store_path: store.clone(),
@@ -1201,14 +1262,7 @@ mod tests {
     #[tokio::test]
     async fn migration_compat_import_without_expiry_is_not_permanent_and_bad_store_is_not_overwritten(
     ) {
-        let directory = std::env::temp_dir().join(format!(
-            "miora-migration-expiry-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = temp_store_dir("miora-migration-expiry");
         let store = Arc::new(directory.join("tokens.json"));
         let manager = CodexOAuthManager {
             store_path: store.clone(),
@@ -1221,8 +1275,12 @@ mod tests {
             )
             .await
             .unwrap();
+        let reference = manager
+            .account_reference("account,refresh", "codex")
+            .await
+            .unwrap();
         assert!(!token_is_valid(
-            &manager.cache.lock().await["account,refresh"],
+            &manager.cache.lock().await[&reference],
             Duration::ZERO
         ));
         tokio::fs::write(store.as_ref(), b"not-json").await.unwrap();
@@ -1333,14 +1391,7 @@ mod tests {
 
     #[tokio::test]
     async fn provider_refresh_token_rotations_survive_manager_restart() {
-        let directory = std::env::temp_dir().join(format!(
-            "miora-provider-oauth-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = temp_store_dir("miora-provider-oauth");
         let store = Arc::new(directory.join("tokens.json"));
         let manager = CodexOAuthManager {
             store_path: store.clone(),
@@ -1372,14 +1423,7 @@ mod tests {
 
     #[tokio::test]
     async fn gateway_features_failed_token_publication_is_not_cached_as_saved() {
-        let directory = std::env::temp_dir().join(format!(
-            "miora-oauth-{}-{}",
-            std::process::id(),
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+        let directory = temp_store_dir("miora-oauth");
         let store = directory.join("tokens.json");
         tokio::fs::create_dir_all(&store).await.unwrap();
         let manager = CodexOAuthManager {

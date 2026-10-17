@@ -290,30 +290,10 @@ async fn channel_balances_response(
     let Some(name) = query_value(uri, "provider").filter(|name| !name.is_empty()) else {
         return json_error(StatusCode::BAD_REQUEST, "provider is required");
     };
-    let today = crate::providers::balances::today_utc();
-    let start_date = query_value(uri, "start_date").unwrap_or_else(|| today.clone());
-    let end_date = query_value(uri, "end_date").unwrap_or_else(|| today.clone());
-    if !crate::providers::balances::valid_date(&start_date)
-        || !crate::providers::balances::valid_date(&end_date)
-        || start_date > end_date
-    {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            "start_date and end_date must be valid ascending YYYY-MM-DD values",
-        );
-    }
-    let model = query_value(uri, "model");
     match state.runtime.balance_provider(headers, &name).await {
         Ok((provider, proxy)) => json_response(
             StatusCode::OK,
-            crate::providers::balances::query(
-                &provider,
-                proxy.as_deref(),
-                &start_date,
-                &end_date,
-                model.as_deref(),
-            )
-            .await,
+            crate::providers::balances::query_channel(state, &provider, proxy.as_deref()).await,
         ),
         Err(status) => json_error(
             StatusCode::from_u16(status).unwrap_or(StatusCode::SERVICE_UNAVAILABLE),

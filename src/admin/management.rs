@@ -27,6 +27,12 @@ pub(super) async fn handle(state: &AppState, request: Request, path: &str) -> Re
         (Method::GET, "/admin/api/update") => check_update(state).await,
         (Method::POST, "/admin/api/update") => apply_update(state).await,
         (Method::GET, "/admin/api/channels") => channels(state).await,
+        (Method::GET, "/admin/api/channels/balances") => {
+            super::balances::read(state, request.uri()).await
+        }
+        (Method::POST, "/admin/api/channels/balances") => {
+            super::balances::refresh(state, request).await
+        }
         (Method::GET, "/admin/api/api-keys") => api_keys(state).await,
         (Method::GET, "/admin/api/backend-logs") => super::backend_logs::read(request.uri()),
         (Method::GET, "/admin/api/workspace") => super::workspace::read(state, request.uri()).await,
@@ -74,6 +80,7 @@ pub(super) async fn handle(state: &AppState, request: Request, path: &str) -> Re
             "/admin/api/overview"
             | "/admin/api/update"
             | "/admin/api/channels"
+            | "/admin/api/channels/balances"
             | "/admin/api/virtual-models"
             | "/admin/api/channels/keys"
             | "/admin/api/channels/detail"
@@ -437,30 +444,26 @@ async fn channel_models(state: &AppState, request: Request) -> ApiResult {
         .or_else(|| engine.strip_prefix("plugin:"));
     if let Some(id) = plugin_id {
         // models() merges registry defaults beneath these saved + draft schema values.
-        let mut config = channel
+        let config = channel
             .get("plugin_config")
             .and_then(Value::as_object)
             .cloned()
             .unwrap_or_default();
-        // Match execution for legacy channels whose supplier key lives in `api`.
-        if let Some(version) = state.plugins.snapshot().versions.get(id) {
-            let key = crate::config::discovery::first_provider_key(channel.get("api"));
-            if !version.manifest.auth.config_key.is_empty()
-                && !key.is_empty()
-                && key != "__channel_plugin__"
-            {
-                config.insert(version.manifest.auth.config_key.clone(), json!(key));
-            }
-        }
+        let key = crate::config::discovery::first_provider_key(channel.get("api"));
         let result = state
             .plugins
-            .models(
+            .models_authenticated(
+                &state.codex_oauth,
                 id,
                 channel
                     .get("provider")
                     .and_then(Value::as_str)
                     .unwrap_or_default(),
                 config,
+                &key,
+                channel
+                    .pointer("/preferences/proxy")
+                    .and_then(Value::as_str),
             )
             .await
             .map_err(|message| {

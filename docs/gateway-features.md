@@ -109,7 +109,7 @@ Codex 渠道支持导入 `auth.json` 的 `tokens.account_id` 与 `tokens.refresh
 
 Claude 与 Antigravity 的浏览器授权在供应商返回 refresh token 时保存可刷新凭据，自动刷新和后台「刷新授权」使用各自的授权端点。刷新后的 token 继续写入现有 OAuth 凭据存储，重启后可继续使用；Codex 的 `account_id,refresh_token` 格式保持兼容。此前只保存 access token 的旧账号需要重新授权一次，无法从 access token 还原 refresh token。静态 Key 不显示 OAuth 刷新入口。
 
-目前没有 Gemini CLI、Grok 的浏览器 OAuth 授权流程，也没有跨供应商多时间窗口的额度面板；原有 sub2api 余额查询保留。
+目前没有 Gemini CLI、Grok 的浏览器 OAuth 授权流程。渠道额度查询全部由插件执行，支持套餐、余额和多个限额窗口，手动刷新并持久保存；不会为普通渠道猜测余额接口。随项目提供 Codex、NovelAI、DeepSeek、Kimi 开放平台和 Kimi Coding Plan 五个独立余额插件。
 
 ## 流式对话调试台
 

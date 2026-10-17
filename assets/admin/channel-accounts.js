@@ -2,6 +2,40 @@ import * as api from './api.js';
 import { icon } from './icons.js';
 import { badge, dialog, esc, toast } from './ui.js';
 
+export function coreAccountOptions(accounts, selected = []) {
+  return accounts.map(account => `<label class="field"><span><input type="checkbox" data-core-account value="${esc(account.account_ref)}"${selected.includes(account.account_ref) ? ' checked' : ''}> ${esc(account.email || account.account_id || account.account_ref)}</span><span class="subline">${esc(account.account_id || '账号 ID 待同步')} · ${account.expires_at ? `到期 ${esc(new Date(account.expires_at * 1000).toLocaleString())}` : '到期时间未知'}${account.channels.length ? ` · ${esc(account.channels.join('、'))}` : ''}</span></label>`).join('');
+}
+
+export function createCoreAccountSelector(root, { channel = '', onChange = () => {} } = {}) {
+  const controller = new AbortController();
+  let accounts = [], selected = [], edited = false, loading = false;
+  root.innerHTML = '<div class="form-section-header"><h3>核心 Codex OAuth 账号</h3><button type="button" class="button small" data-core-reload>刷新列表</button></div><div data-core-options></div><p class="hint" data-core-status></p>';
+  const draw = () => { root.querySelector('[data-core-options]').innerHTML = coreAccountOptions(accounts, selected); };
+  const setSelection = references => { selected = [...new Set(references)]; edited = true; draw(); onChange([...selected]); };
+  async function refresh() {
+    if (loading) return;
+    loading = true;
+    const status = root.querySelector('[data-core-status]');
+    status.textContent = '正在读取账号…';
+    try {
+      const result = await api.get('/channels/keys?oauth=accounts&provider=codex', { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      accounts = result.accounts;
+      if (!edited) selected = accounts.filter(account => account.channels.includes(channel)).map(account => account.account_ref);
+      draw();
+      status.textContent = (accounts.length ? '账号可关联多个渠道；此处显示缓存到期信息，不代表已向上游验证授权。' : '暂无核心账号，请通过核心 OAuth 登录或导入含 refresh token 的凭据。') + ' 迁移前须停止旧网关刷新同一授权；两个网关不共享刷新锁。';
+    } catch (error) {
+      if (!controller.signal.aborted) status.textContent = error.message;
+    } finally { loading = false; }
+  }
+  root.addEventListener('change', event => {
+    if (!event.target.matches('[data-core-account]')) return;
+    setSelection([...root.querySelectorAll('[data-core-account]:checked')].map(input => input.value));
+  });
+  root.querySelector('[data-core-reload]').addEventListener('click', refresh);
+  return { refresh, setSelection, value: () => [...selected], destroy: () => controller.abort() };
+}
+
 export function formatAccountIdentity(key) {
   const oauth = key.oauth || {};
   const primary = oauth.email || oauth.account_id || key.credential || `账号 #${key.position}`;
@@ -28,7 +62,9 @@ export async function openChannelAccounts(provider) {
   let data = await api.get(`/channels/keys?${new URLSearchParams({ provider })}`);
   let form, timer, pollTimer, busy = false, closed = false, oauthSession = null;
   const controller = new AbortController();
-  const isOAuthEngine = ['codex', 'claude', 'antigravity'].includes(data.engine);
+  const oauthProvider = data.oauth_provider || (['codex', 'claude', 'antigravity'].includes(data.engine) ? data.engine : '');
+  const isOAuthEngine = Boolean(oauthProvider);
+  let coreSelector;
   const testState = new Map();
   function draw() {
     const view = form.querySelector('[data-account-list]');
@@ -62,10 +98,19 @@ export async function openChannelAccounts(provider) {
     : '';
   form = dialog({ title: `${provider} · 账号管理`, size: 'wide', submitLabel: '关闭', showCancel: false,
     body: `<div data-account-list></div>${oauthSection}<section class="form-section"><div class="form-section-header"><h2>${isOAuthEngine ? '导入文件或批量添加' : '添加凭据'}</h2></div><label class="field"><span>上传 JSON 文件</span><input data-account-file type="file" accept=".json,application/json"></label><label class="field"><span>粘贴 JSON 或每行一个凭据</span><textarea data-account-import rows="3" placeholder="粘贴凭据 JSON 或每行一个 Key / Token" autocomplete="off" spellcheck="false"></textarea></label><button type="button" class="button primary" data-account-upload>${icon('plus')}导入保存</button></section><p data-account-error class="text-danger" role="alert"></p>`,
-    onSubmit: async () => {}, onClose: () => { closed = true; clearInterval(timer); clearInterval(pollTimer); controller.abort(); },
+    onSubmit: async () => {}, onClose: () => { closed = true; clearInterval(timer); clearInterval(pollTimer); controller.abort(); coreSelector?.destroy(); },
     onMount: mounted => {
       form = mounted; draw();
+      if (oauthProvider === 'codex') {
+        form.querySelector('[data-account-list]').insertAdjacentHTML('afterend', '<section class="form-section" data-core-selector></section><button type="button" class="button primary" data-core-link>关联选中账号</button>');
+        coreSelector = createCoreAccountSelector(form.querySelector('[data-core-selector]'), { channel: provider });
+        coreSelector.refresh();
+      }
       form.addEventListener('click', async event => {
+        if (event.target.closest('[data-core-link]')) {
+          await mutate({ account_refs: coreSelector.value() }, 'POST', '核心账号已关联；刷新仍由核心统一管理');
+          return;
+        }
         const testBtn = event.target.closest('[data-key-test]');
         const toggle = event.target.closest('[data-key-toggle]');
         const refresh = event.target.closest('[data-key-refresh]');
@@ -101,7 +146,7 @@ export async function openChannelAccounts(provider) {
         if (event.target.closest('[data-oauth-start]')) {
           try {
             clearInterval(pollTimer);
-            oauthSession = await api.get(`/channels/keys?${new URLSearchParams({ oauth: 'authorize', provider: data.engine })}`, { signal: controller.signal });
+            oauthSession = await api.get(`/channels/keys?${new URLSearchParams({ oauth: 'authorize', provider: oauthProvider })}`, { signal: controller.signal });
             const flow = form.querySelector('[data-oauth-flow]');
             const urlInput = form.querySelector('[data-oauth-url]');
             urlInput.value = oauthSession.authorize_url;
@@ -131,7 +176,7 @@ export async function openChannelAccounts(provider) {
           clearInterval(pollTimer);
           const ok = await mutate({
             oauth_exchange: {
-              provider: data.engine,
+              provider: oauthProvider,
               code,
               state: oauthSession?.state || undefined,
               code_verifier: oauthSession?.code_verifier || '',

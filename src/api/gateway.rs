@@ -208,7 +208,13 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
         }
     }
     let retry_policy = state.runtime.retry_policy(&headers).await;
-    let max_attempts = if native.is_some() {
+    let single_execution = native.is_some()
+        || resolved.providers.iter().any(|provider| {
+            state
+                .plugins
+                .core_oauth_single_execution(provider, &method, &path)
+        });
+    let max_attempts = if single_execution {
         1
     } else {
         retry_policy.max_attempts(
@@ -221,7 +227,7 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
     } else {
         Default::default()
     };
-    let auto_retry = native.is_none() && retry_policy.enabled();
+    let auto_retry = !single_execution && retry_policy.enabled();
     let (input, image_reservations) = if native.is_some() {
         (input, Vec::new())
     } else {

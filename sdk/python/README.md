@@ -128,7 +128,47 @@ Manifest 支持 `name`、`author`、`description`、`version`、`api_version`、
 
 凭据是明文文件而非加密保险库。Unix 新文件权限为 0600，Windows 继承数据目录 ACL，部署者需要限制数据目录访问。凭据不放在前端本地存储中；SDK 状态接口只返回连接／可刷新／到期状态，不返回 token。插件是可信代码，作者仍须避免自行把凭据打印到日志。
 
-## OAuth 扩展
+## 复用核心 Codex OAuth
+
+渠道执行类型与认证方式独立。图片插件、原生认证代理等仍使用 `plugin:<id>` 执行，不要把 engine 改成 codex。需要复用核心账号时在现有 auth 中声明：
+
+```json
+{
+  "auth": {"type": "core_oauth", "provider": "codex"},
+  "capabilities": {
+    "endpoints": ["/v1/images/generations"],
+    "request_formats": ["json"],
+    "streaming": true,
+    "model_discovery": true
+  }
+}
+```
+
+这是清单片段，不是完整插件。此模式不声明 auth.config_key，也不启用插件自管的 capabilities.oauth；当前核心托管供应商为 codex。普通 API Key 插件继续使用 bearer/api_key/query，宿主不会根据逗号、JSON 或 JWT 外观替它启用 OAuth。
+
+后台新增／编辑此类渠道时可以选核心已有账号，或使用核心登录／导入。账号池也支持将选中账号追加关联到现有渠道。一个渠道可关联多个账号，同一账号可被文本和图片渠道同时引用。关联使用现有 api 字段中的 `core-oauth:codex:<不透明ID>` 字符串或数组，不把 RT 复制到每个渠道的插件配置。
+
+核心在现有 `CODEX_REFRESH_TOKEN_STORE_PATH` 中保存稳定账号记录、AT、到期时间、最新 RT 和旧引用的别名；旧文本渠道的 `account_id,原始RT` 引用仍能找到同一记录，无需重写现有渠道配置。同一账号的缓存和刷新锁按稳定记录共享，不以渠道名或插件版本分锁。刷新先成功持久化，再发布新缓存；重启、插件更新和兼容版本回滚不要求重新登录。内存缓存和锁仅覆盖当前 Miora 进程，不是跨实例锁。
+
+执行及模型发现的宿主信封新增只读的 `resolved_auth`，JSON、SSE、多模态资源、原生代理共用同一解析机制：
+
+```json
+{
+  "authentication": {"type":"core_oauth", "provider":"codex"},
+  "resolved_auth": {
+    "provider":"codex", "account_ref":"core-oauth:codex:opaque-id",
+    "access_token":"本次有效AT", "account_id":"本次选中账号ID", "expires_at":1900000000
+  }
+}
+```
+
+`context.resolved_auth` 读取已解析认证，`context.account` 只读取供应商／账号引用／account_id／到期时间。标准 Channel、Responses 和 NativeProxy 自动用同一 resolved_auth 设置 `Authorization: Bearer <AT>` 与 `ChatGPT-Account-Id: <account_id>`，不会使用配置里固定的旧账号 ID。完全自定义插件可直接读取这两个对象，不要自行解析 JWT、读取核心凭据文件或调用管理员接口。
+
+RT 不进入执行信封；服务间 Authorization 仍仅是插件服务凭据，不能把它当上游 AT。核心托管模式拒绝 context.credentials 及同时设置的插件 OAuth 刷新器；独立插件自管 OAuth 模式仍保留。不要记录 resolved_auth 或 AT。核心发现账号缺失或续期失败时，在发送插件请求前返回明确错误；尚未到期的缓存 AT 不代表已向上游验证授权。图片生成／编辑及视频任务创建不自动重放或并发抢跑，以免重复生成。原生代理继续只执行一次。
+
+**迁移前必须停止旧网关对同一授权的自动刷新，或使用独立授权。Miora 无法证明／阻止旧 Zoa 实例仍在刷新，两个网关不共享本地刷新锁。** 当前验证是离线信封、模拟续期并发、持久化重载及 SDK 测试，不代表真实 Codex 图片生成、真实登录续期或托管插件进程生命周期已验收。
+
+## 插件自管 OAuth 扩展
 
 在 `capabilities` 声明 `"oauth": true`，后台渠道表单自动出现获取授权链接、兑换授权码、刷新和状态按钮。必须先填写稳定的渠道名称；模型发现和执行使用同一渠道名读取账号，渠道名不是临时调试请求 ID。
 
@@ -191,6 +231,69 @@ serve(NativeProxy(manifest))
 - 原生模式不自动重试、跨渠道回落或对冲，避免重复创建任务或上传文件。需要账号一致性的文件／异步任务，使用每个渠道一个上游账号；通用任意路径目前不提供跨 Key 池的任务账号绑定。WebSocket／HTTP Upgrade 不属于此 HTTP 代理能力。
 - 压缩字节不会被原生入口解压后再转发。`body` 模型提取仅为授权读取 JSON 视图，复用当前 identity／zstd 解码能力；其他 Content-Encoding 应将模型授权放在 path、query 或适用的固定接口规则中，不能冒充已支持 gzip 正文模型提取。
 - 用量是旁路观察：识别现有 Chat／Responses／Claude／Gemini usage 字段和缓存细项，不改变输出。未声明的供应商用量格式保持未知，不伪造 0 或完成事件。观察缓冲最多 1 MiB，超过后只停止观察，不截断转发；未知原生协议的 HTTP 200／流结束不等于完成了业务兼容验收。
+
+## 余额与套餐查询
+
+插件可声明 `capabilities.balance_query: true`，并在已有 `Channel` / `NativeProxy`
+子类中实现 `balance(context)`。不需要新增前端字段或重写请求执行路径。
+核心只在管理员显式查询时调用插件的 `POST /balance`；调用信封与模型发现相同，
+`context.config` 使用该渠道实例配置，`context.resolved_auth` / `context.account` 复用核心已解析账号。
+`headers(context)` 会使用同一次选择的 AT 和账号 ID，不读取 RT，也不创建插件凭据副本。
+服务间凭据仅用于核心访问插件，不得作为供应商 token。
+
+返回普通 JSON，支持以下展示字段：
+
+```python
+def balance(self, context):
+    data = self.read_json(self.open_http(context, "/account/usage"))
+    return {
+        "plan": data["plan_name"],
+        "amount": data.get("balance"),
+        "currency": "credits",
+        "windows": [{
+            "label": "图片额度",
+            "remaining_percent": data.get("remaining_percent"),
+            "reset_at": data.get("reset_at"),
+        }],
+    }
+```
+
+示例 `/account/usage` 是占位供应商接口，应改成真实的只读余额接口。
+也可返回 `active`（套餐生效）、`available`（余额可用）、`expires_at`、`unlimited`、
+`buckets: [{"label":"订阅 Anlas","amount":1000,"unit":"Anlas"}]`；
+窗口可提供 `limit_seconds`、`remaining`、`unit`、`limit_reached`。
+时间支持 Unix 秒或带时区的 ISO 字符串，未知数值用 `None` 或省略；不要从套餐名推测百分比、币种或无限额。
+核心只保存这些展示字段及账号元数据，不保存插件原始响应、认证配置或 token。
+未声明能力时不会调用该钩子；声明但未实现会明确失败，不返回伪造的余额。
+插件余额请求固定使用所选执行版本，更新过程中仍由原快照保有该版本直到请求完成。
+
+余额也可作为独立插件，继承 `BalancePlugin`，在 manifest 中声明 `endpoints: []`、
+`balance_query: true` 和 `balance_targets`。它不出现在「新增渠道」的渠道类型列表，
+而是挂到已有渠道的「余额插件」选择器；不替换原有文本、图片或原生代理执行方式。
+
+```json
+"balance_targets": [{"origins":["https://supplier.example"],"path_prefix":"/coding"}]
+```
+
+每个 target 的 `engines`、`oauth_providers`、`origins` 任意一个匹配即可，
+`path_prefix` 另按路径段边界匹配；多个 target 是或关系。未声明 target 的插件仅能手动关联，
+不会自动探测所有渠道。多个插件同时匹配时要求明确选择，不随机兜底。
+渠道 `preferences.balance_plugin` 可指定插件 ID；`null` 回到自动匹配。
+插件自己的余额钩子优先于自动匹配的独立插件，显式选择优先于两者。
+
+`BalancePlugin.read_balance(context, url)` 提供六秒超时、256 KiB JSON 上限、不跟随重定向、
+渠道代理、当前认证头及真实的 Miora User-Agent。抛出 `BalanceQueryError(code)` 可返回规范的
+鉴权失败、超时或限流状态，不包含原始上游错误正文，也不自动重试。
+只需在 `balance()` 中调用该方法并映射展示字段。`context.request["proxy"]` 是本次渠道代理。
+
+独立插件按所选渠道继承 Base URL 和当前凭据；`balance_plugin_config` 可覆盖该插件声明的配置。
+源渠道也是插件时，从其配置字段／认证声明取上游 Key，不把插件服务间密钥冒充上游凭据。
+核心 OAuth 继续由 `resolved_auth` 提供同次选择的 AT 与账号 ID，不下发 RT。
+安装 `balance-codex` 后，文本渠道和声明核心 Codex OAuth 的图片插件可共用这一余额插件，
+不要求图片插件重复实现额度查询。未安装时明确不支持，不再有核心内置额度查询兜底。
+
+随项目提供的五个插件源码在 `plugins/balances`，打包命令为
+`python -B scripts/package_balance_plugins.py`，生成可上传的五个 ZIP，不安装或启动插件。
 
 ## 验证范围
 

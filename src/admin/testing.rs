@@ -348,31 +348,6 @@ async fn run_direct_channel_test(state: &AppState, input: TestRequest) -> ApiRes
                 "该渠道尚未配置 API Key 或授权账号",
             )
         })?;
-    let mut provider_key = provider_key_raw.clone();
-    let mut codex_account_id = None;
-    if (matches!(
-        provider.engine.to_ascii_lowercase().as_str(),
-        "codex" | "claude" | "antigravity"
-    ) && provider_key_raw.contains(','))
-        || provider_key_raw.trim_start().starts_with('{')
-    {
-        let auth = state
-            .codex_oauth
-            .resolve(
-                &provider_key_raw,
-                provider.preferences.get("proxy").and_then(Value::as_str),
-            )
-            .await
-            .map_err(|message| {
-                error(
-                    StatusCode::UNAUTHORIZED,
-                    "oauth_resolution_failed",
-                    &message,
-                )
-            })?;
-        provider_key = auth.bearer;
-        codex_account_id = auth.account_id;
-    }
     let uri: Uri = endpoint.parse().map_err(|_| {
         error(
             StatusCode::BAD_REQUEST,
@@ -388,11 +363,12 @@ async fn run_direct_channel_test(state: &AppState, input: TestRequest) -> ApiRes
         default_model: String::new(),
         content_type: "application/json".into(),
     };
-    let mut prepared = state
+    let prepared = state
         .plugins
-        .prepare(
+        .prepare_authenticated(
+            &state.codex_oauth,
             &provider,
-            &provider_key,
+            &provider_key_raw,
             &model_name,
             &original_model,
             &axum::http::Method::POST,
@@ -402,12 +378,15 @@ async fn run_direct_channel_test(state: &AppState, input: TestRequest) -> ApiRes
             &prepared_input,
             &request_id,
         )
-        .map_err(|message| error(StatusCode::BAD_REQUEST, "attempt_build_failed", &message))?;
-    if let Some(account_id) = codex_account_id {
-        if let Ok(value) = axum::http::HeaderValue::from_str(&account_id) {
-            prepared.headers.insert("chatgpt-account-id", value);
-        }
-    }
+        .await
+        .map_err(|failure| {
+            error(
+                failure.status(),
+                "attempt_build_failed",
+                &failure.to_string(),
+            )
+        })?;
+    let provider_key = prepared.provider_key.clone();
     let started = Instant::now();
     let attempt_id = format!("{request_id}-r1");
     let operation = async {

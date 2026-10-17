@@ -16,9 +16,216 @@ pub(super) fn registry() -> PluginRegistry {
 pub(super) fn registration(expected: u64, version: &str) -> Registration {
     serde_json::from_value(json!({"manifest":{"id":"echo","name":"Echo","version":version,"api_version":1,"config_schema":[{"key":"prefix","label":"Prefix","type":"string","default":"Hello"},{"key":"credential","type":"string","secret":true}],"auth":{"type":"none"},"capabilities":{"endpoints":["/v1/chat/completions","/v1/responses"],"streaming":true,"model_discovery":true},"models":[{"id":"echo-model"}]},"endpoint":"http://127.0.0.1:8765","config":{"credential":"channel-secret"},"service_auth":{"type":"bearer","token":"service-secret"},"expected_revision":expected})).unwrap()
 }
+#[test]
+fn balances_plugin_capability_is_opt_in_and_survives_manifest_serialization() {
+    let mut entry = registration(0, "1.0.0");
+    assert!(!entry.manifest.capabilities.balance_query);
+    entry.manifest.capabilities.balance_query = true;
+    entry.manifest.validate().unwrap();
+    let encoded = serde_json::to_value(&entry.manifest).unwrap();
+    assert_eq!(encoded["capabilities"]["balance_query"], true);
+    let decoded: super::manifest::Manifest = serde_json::from_value(encoded).unwrap();
+    assert!(decoded.capabilities.balance_query);
+}
+
+#[tokio::test]
+async fn balances_attached_plugin_reuses_channel_credentials_without_service_secret_or_config_leaks(
+) {
+    let reg = registry();
+    let mut source = registration(0, "1.0.0");
+    source.manifest.config_schema = serde_json::from_value(json!([
+        {"key":"base_url","type":"string","default":"https://upstream.invalid/v1"},
+        {"key":"token","type":"string","secret":true},
+        {"key":"other_secret","type":"string","secret":true}]))
+    .unwrap();
+    source.manifest.auth =
+        serde_json::from_value(json!({"type":"bearer","config_key":"token"})).unwrap();
+    source.config =
+        serde_json::from_value(json!({"token":"upstream-key","other_secret":"not-for-balance"}))
+            .unwrap();
+    reg.register(source).unwrap();
+    let manifest: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/plugins/balances/deepseek/manifest.json"
+    )))
+    .unwrap();
+    reg.register(
+        serde_json::from_value(
+            json!({"manifest":manifest,"endpoint":"http://127.0.0.1:8766","expected_revision":0}),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    let channel=crate::config::snapshot::runtime_provider(serde_json::from_value(json!({"name":"existing","engine":"plugin:echo",
+        "base_url":"https://not-an-upstream.invalid","api":"__channel_plugin__","models":{"alias":"real"},
+        "preferences":{"channel_plugin":"echo","plugin_config":{"base_url":"https://api.deepseek.com/v1"}}})).unwrap(),Default::default());
+    assert_eq!(
+        reg.balance_plugin_id(&channel).unwrap().as_deref(),
+        Some("balance-deepseek")
+    );
+    let snapshot = reg.snapshot();
+    let envelope = PluginRegistry::balance_envelope(
+        &crate::providers::codex::oauth::CodexOAuthManager::new(),
+        &channel,
+        "__channel_plugin__",
+        Some("http://proxy.invalid"),
+        &snapshot.versions["balance-deepseek"],
+        Some(&snapshot.versions["echo"]),
+    )
+    .await
+    .unwrap();
+    assert_eq!(envelope["channel"]["config"]["api_key"], "upstream-key");
+    assert_eq!(
+        envelope["channel"]["config"]["base_url"],
+        "https://api.deepseek.com/v1"
+    );
+    assert_eq!(envelope["request"]["proxy"], "http://proxy.invalid");
+    assert!(!envelope.to_string().contains("not-for-balance"));
+    assert!(!envelope.to_string().contains("service-secret"));
+    assert_eq!(channel.engine.as_ref(), "plugin:echo");
+}
 fn provider() -> Arc<crate::config::snapshot::Provider> {
     let raw = serde_json::from_value(json!({"name":"test","base_url":"https://not-used.invalid","engine":"plugin:echo","api":"__channel_plugin__","models":{"public-model":"echo-model"},"preferences":{"channel_plugin":"echo"}})).unwrap();
     crate::config::snapshot::runtime_provider(raw, Arc::new(AtomicUsize::new(0)))
+}
+fn balances_registration(expected: u64, version: &str) -> Registration {
+    let manifest: Value = serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/plugins/balances/deepseek/manifest.json"
+    )))
+    .unwrap();
+    let mut entry: Registration = serde_json::from_value(json!({"manifest":manifest,
+        "endpoint":"http://127.0.0.1:8766","expected_revision":expected}))
+    .unwrap();
+    entry.manifest.version = version.to_owned();
+    entry
+}
+
+#[test]
+fn balances_attached_plugin_update_and_rollback_use_the_execution_configuration() {
+    let reg = registry();
+    let mut source = registration(0, "1");
+    source.manifest.config_schema = serde_json::from_value(json!([
+        {"key":"base_url","type":"string","default":"https://api.deepseek.com/v1"},
+        {"key":"token","type":"string","secret":true,"required":true}]))
+    .unwrap();
+    source.manifest.auth =
+        serde_json::from_value(json!({"type":"bearer","config_key":"token"})).unwrap();
+    source.config = serde_json::from_value(json!({"token":"real-source-key"})).unwrap();
+    reg.register(source).unwrap();
+    let channel = provider();
+    let mut first = balances_registration(0, "1");
+    first
+        .manifest
+        .config_schema
+        .push(serde_json::from_value(json!({"key":"region","type":"string"})).unwrap());
+    reg.validate_instances(&first.manifest, None, &[channel.clone()])
+        .unwrap();
+    reg.register(first).unwrap();
+    let mut update = balances_registration(1, "2");
+    update.manifest.config_schema.push(
+        serde_json::from_value(json!({"key":"region","type":"integer","required":true})).unwrap(),
+    );
+    assert!(reg
+        .validate_instances(&update.manifest, None, &[channel.clone()])
+        .unwrap_err()
+        .contains("region"));
+    let mut configured = (*channel).clone();
+    Arc::make_mut(&mut configured.preferences)
+        .insert("balance_plugin_config".to_owned(), json!({"region":2}));
+    let configured = Arc::new(configured);
+    reg.validate_instances(&update.manifest, None, &[configured.clone()])
+        .unwrap();
+    reg.register(update).unwrap();
+    assert!(reg
+        .validate_rollback_instances("balance-deepseek", 1, &[configured.clone()])
+        .unwrap_err()
+        .contains("region"));
+    assert_eq!(
+        reg.balance_plugin_id(&configured).unwrap().as_deref(),
+        Some("balance-deepseek")
+    );
+    assert_eq!(configured.api_keys, channel.api_keys);
+    assert_eq!(configured.models, channel.models);
+}
+
+#[test]
+fn balances_attached_plugin_explicit_link_survives_a_disabled_plugin() {
+    let reg = registry();
+    let entry = balances_registration(0, "1");
+    reg.register(entry.clone()).unwrap();
+    reg.change("balance-deepseek", 1, Some(false), None)
+        .unwrap();
+    let channel = crate::config::snapshot::runtime_provider(serde_json::from_value(json!({
+        "name":"reverse-proxy","engine":"gpt","base_url":"https://proxy.invalid/v1","api":"source-key",
+        "models":{"alias":"real"},"preferences":{"balance_plugin":"balance-deepseek"}})).unwrap(), Default::default());
+    reg.validate_instances(&entry.manifest, None, &[channel.clone()])
+        .unwrap();
+    let mut removed = entry.manifest.clone();
+    removed.capabilities.balance_query = false;
+    assert!(reg
+        .validate_instances(&removed, None, &[channel.clone()])
+        .unwrap_err()
+        .contains("balance_query"));
+    let mut changed = entry.manifest.clone();
+    changed.config_schema.push(
+        serde_json::from_value(json!({"key":"region","type":"string","required":true})).unwrap(),
+    );
+    assert!(reg
+        .validate_instances(&changed, None, &[channel.clone()])
+        .unwrap_err()
+        .contains("region"));
+    let unrelated = crate::config::snapshot::runtime_provider(serde_json::from_value(json!({
+        "name":"unrelated","base_url":"https://proxy.invalid","api":"other-key","models":{"alias":"real"}})).unwrap(), Default::default());
+    reg.validate_instances(&changed, None, &[unrelated])
+        .unwrap();
+}
+
+#[tokio::test]
+async fn balances_attached_plugin_management_lists_automatic_and_disabled_explicit_links() {
+    let reg = registry();
+    reg.register(balances_registration(0, "1")).unwrap();
+    let automatic = crate::config::snapshot::runtime_provider(serde_json::from_value(json!({
+        "name":"automatic","base_url":"https://api.deepseek.com/v1","api":"key","models":{"alias":"real"}})).unwrap(), Default::default());
+    let explicit = crate::config::snapshot::runtime_provider(serde_json::from_value(json!({
+        "name":"explicit","base_url":"https://proxy.invalid/v1","api":"key","models":{"alias":"real"},
+        "preferences":{"balance_plugin":"balance-deepseek"}})).unwrap(), Default::default());
+    let oauth = crate::providers::codex::oauth::CodexOAuthManager::new();
+    for enabled in [true, false] {
+        if !enabled {
+            reg.change("balance-deepseek", 1, Some(false), None)
+                .unwrap();
+        }
+        let request = axum::http::Request::builder()
+            .uri("/admin/api/plugins")
+            .body(Body::empty())
+            .unwrap();
+        let response = super::api::handle(
+            &reg,
+            request,
+            &[automatic.clone(), explicit.clone()],
+            &oauth,
+        )
+        .await;
+        assert_eq!(response.status(), 200);
+        let result: Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await.unwrap())
+                .unwrap();
+        let plugin = result["plugins"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|plugin| plugin["id"] == "balance-deepseek")
+            .unwrap();
+        assert_eq!(
+            plugin["channels"],
+            if enabled {
+                json!(["automatic", "explicit"])
+            } else {
+                json!(["explicit"])
+            }
+        );
+    }
 }
 fn input(stream: bool) -> crate::providers::types::PreparedInput {
     crate::providers::types::PreparedInput {
@@ -358,14 +565,30 @@ async fn management_handler_limits_methods_and_reports_conflict() {
         .uri("/admin/api/plugins/echo/disable")
         .body(Body::from(r#"{"expected_revision":0}"#))
         .unwrap();
-    let response = super::api::handle(&reg, request, &[]).await;
+    let response = super::api::handle(
+        &reg,
+        request,
+        &[],
+        &crate::providers::codex::oauth::CodexOAuthManager::new(),
+    )
+    .await;
     assert_eq!(response.status(), 409);
     let request = axum::http::Request::builder()
         .method("DELETE")
         .uri("/admin/api/plugins/echo")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(super::api::handle(&reg, request, &[]).await.status(), 405);
+    assert_eq!(
+        super::api::handle(
+            &reg,
+            request,
+            &[],
+            &crate::providers::codex::oauth::CodexOAuthManager::new()
+        )
+        .await
+        .status(),
+        405
+    );
 }
 
 #[test]

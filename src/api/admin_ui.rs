@@ -128,6 +128,13 @@ pub(crate) fn handle(state: &AppState, request: &Request) -> Option<Response<Bod
                 "/assets/admin/channel-accounts.js"
             )),
         ),
+        "/admin/assets/channel-balances.js" => (
+            "text/javascript; charset=utf-8",
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/admin/channel-balances.js"
+            )),
+        ),
         "/admin/assets/playground.js" => (
             "text/javascript; charset=utf-8",
             include_str!(concat!(

@@ -10,6 +10,7 @@ COPY Cargo.toml Cargo.lock ./
 COPY README.md ./README.md
 COPY assets ./assets
 COPY sdk ./sdk
+COPY plugins ./plugins
 COPY src ./src
 RUN cargo build --release --locked && cp target/release/uni-api-front /tmp/uni-api-front
 FROM debian:bookworm-slim
@@ -21,4 +22,5 @@ RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates
 EXPOSE 8000
 WORKDIR /home
 COPY --from=builder /tmp/uni-api-front /usr/local/bin/uni-api-front
+COPY --from=builder /workspace/plugins /home/plugins
 ENTRYPOINT ["/usr/local/bin/uni-api-front"]

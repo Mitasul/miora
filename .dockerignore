@@ -13,6 +13,8 @@
 !sdk/**
 !examples/
 !examples/**
+!plugins/
+!plugins/**
 !README.md
 !Dockerfile
 !.dockerignore

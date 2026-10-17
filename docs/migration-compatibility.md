@@ -33,6 +33,12 @@
 
 离线测试覆盖完整导入→持久化→新 manager 重载、模拟轮换保存、旧格式读取及文件错误不覆盖。**真实流式、工具调用、账号额度／账号选择、到期后的真实续期尚未验收。**
 
+## 核心 OAuth 账号共享
+
+插件可通过 `auth: {"type":"core_oauth","provider":"codex"}` 显式引用核心 Codex 账号；原有 API Key 插件不按凭据外观自动转为 OAuth。后台账号选择、核心登录及导入共用稳定账号记录，旧文本渠道引用仍兼容；AT、RT、缓存和刷新锁不以插件实例或版本拆分。插件只接收本次选择对应的 AT、account_id、供应商和不透明账号引用，不接收 RT。JSON、流式、多模态、原生代理及模型发现均经同一解析层。接口和 SDK 用法见 [核心账号复用](../sdk/python/README.md#复用核心-codex-oauth)。
+
+离线模拟覆盖文本／插件并发只刷新一次、多账号调度的 AT/ID 配对、轮换落盘重载、版本切换及错误前置；真实文本＋图片生成仍须使用同一授权分别验收。迁移前须停止旧网关刷新同一授权；本进程的锁不提供跨网关互斥。
+
 ## Claude 无签名历史
 
 每个渠道独立选择 `preferences.unsigned_thinking`：默认 preserve；设为 strip 仅删除 assistant 历史中 signature 缺失、非字符串或空白的 thinking 块。保留非空 signature 和 redacted_thinking，不伪造签名，也不尝试计算或验证签名。
