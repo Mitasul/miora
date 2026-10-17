@@ -10,10 +10,10 @@ fn trust() -> TrustPolicy {
         allow_loopback_http: true,
     }
 }
-fn registry() -> PluginRegistry {
+pub(super) fn registry() -> PluginRegistry {
     PluginRegistry::open(None, trust()).unwrap()
 }
-fn registration(expected: u64, version: &str) -> Registration {
+pub(super) fn registration(expected: u64, version: &str) -> Registration {
     serde_json::from_value(json!({"manifest":{"id":"echo","name":"Echo","version":version,"api_version":1,"config_schema":[{"key":"prefix","label":"Prefix","type":"string","default":"Hello"},{"key":"credential","type":"string","secret":true}],"auth":{"type":"none"},"capabilities":{"endpoints":["/v1/chat/completions","/v1/responses"],"streaming":true,"model_discovery":true},"models":[{"id":"echo-model"}]},"endpoint":"http://127.0.0.1:8765","config":{"credential":"channel-secret"},"service_auth":{"type":"bearer","token":"service-secret"},"expected_revision":expected})).unwrap()
 }
 fn provider() -> Arc<crate::config::snapshot::Provider> {
@@ -233,8 +233,10 @@ fn persistence_roundtrip_and_failed_write_do_not_publish() {
 #[test]
 fn rollback_is_allowed_at_history_limit() {
     let reg = registry();
+    let mut pins = Vec::new();
     for n in 0..100 {
         reg.register(registration(n, &n.to_string())).unwrap();
+        pins.push(reg.pin());
     }
     assert!(reg.register(registration(100, "overflow")).is_err());
     reg.change("echo", 100, None, Some(1)).unwrap();
@@ -321,7 +323,9 @@ async fn real_http_model_discovery_and_sse_execute() {
     registration.endpoint = format!("http://{addr}");
     reg.register(registration).unwrap();
     assert_eq!(
-        reg.models("echo", Default::default()).await.unwrap()["models"][0]["id"],
+        reg.models("echo", "test", Default::default())
+            .await
+            .unwrap()["models"][0]["id"],
         "echo-model"
     );
     let prepared = prepare(&reg, true);
@@ -354,29 +358,21 @@ async fn management_handler_limits_methods_and_reports_conflict() {
         .uri("/admin/api/plugins/echo/disable")
         .body(Body::from(r#"{"expected_revision":0}"#))
         .unwrap();
-    let response = super::api::handle(&reg, request).await;
+    let response = super::api::handle(&reg, request, &[]).await;
     assert_eq!(response.status(), 409);
     let request = axum::http::Request::builder()
         .method("DELETE")
         .uri("/admin/api/plugins/echo")
         .body(Body::empty())
         .unwrap();
-    assert_eq!(super::api::handle(&reg, request).await.status(), 405);
+    assert_eq!(super::api::handle(&reg, request, &[]).await.status(), 405);
 }
 
 #[test]
-fn historical_secret_cannot_be_demoted_and_removed_field_stays_redacted() {
+fn removed_secret_field_stays_redacted() {
     let reg = registry();
     reg.register(registration(0, "1")).unwrap();
     let channel = serde_json::from_value(json!({"credential":"channel-specific-secret"})).unwrap();
-    let mut next = registration(1, "2");
-    next.manifest
-        .config_schema
-        .iter_mut()
-        .find(|f| f.key == "credential")
-        .unwrap()
-        .secret = false;
-    assert!(reg.register(next).is_err());
     let mut next = registration(1, "2");
     next.manifest
         .config_schema

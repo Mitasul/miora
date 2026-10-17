@@ -408,6 +408,7 @@ impl ResponsesRoute {
                 self.stream,
                 &self.request_id,
                 &attempt_id,
+                &payload,
             )?;
             if let Some(account_id) = codex_account_id {
                 HeaderValue::from_str(&account_id)
@@ -1176,6 +1177,9 @@ pub(crate) fn compile_payload(
     if normalization_enabled(provider, request_model, original_model) {
         normalize_response_root(root)?;
     }
+    if engine == "codex" && !wants_compact {
+        crate::providers::codex::compat::search_history(payload);
+    }
     if let Some(before) = before_constraints {
         crate::providers::parameters::record_constraints(&before, payload, &mut report);
     }
@@ -1256,6 +1260,7 @@ pub(crate) fn normalization_enabled(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_headers(
     incoming: &HeaderMap,
     provider: &Provider,
@@ -1264,6 +1269,7 @@ pub(crate) fn build_headers(
     stream: bool,
     request_id: &str,
     attempt_id: &str,
+    payload: &Value,
 ) -> Result<HashMap<String, String>, String> {
     let mut headers = HashMap::from([
         ("Content-Type".into(), "application/json".into()),
@@ -1284,7 +1290,7 @@ pub(crate) fn build_headers(
         );
         headers.insert(
             "Session_id".into(),
-            header_or(incoming, "session_id", request_id),
+            crate::providers::codex::compat::session_id(incoming, payload, request_id),
         );
         headers.insert("User-Agent".into(), CODEX_USER_AGENT.into());
         headers.insert(

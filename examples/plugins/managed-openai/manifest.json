@@ -1,0 +1,23 @@
+{
+  "id": "managed-openai-example",
+  "name": "OpenAI 兼容示例（托管 Python）",
+  "author": "Miora example",
+  "description": "基于 SDK 的 OpenAI Chat 渠道，可为不同供应商创建多个独立渠道。",
+  "version": "1.0.0",
+  "api_version": 1,
+  "sdk_version": 1,
+  "changelog": "首个示例版本。",
+  "permissions": ["network"],
+  "config_schema": [
+    { "key": "base_url", "label": "上游地址", "type": "string", "required": true, "default": "https://api.openai.com/v1" },
+    { "key": "api_key", "label": "上游 API Key", "type": "string", "required": true, "secret": true },
+    { "key": "timeout", "label": "上游读取超时（秒）", "type": "integer", "default": 60 }
+  ],
+  "auth": { "type": "bearer", "config_key": "api_key" },
+  "capabilities": {
+    "endpoints": ["/v1/chat/completions", "/v1/embeddings"],
+    "streaming": true,
+    "model_discovery": true
+  },
+  "models": []
+}

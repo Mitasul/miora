@@ -27,6 +27,16 @@ pub(crate) struct BodyOrigin {
     client: Value,
     constructed: Value,
 }
+pub(crate) fn exclude_plugin_fields<'a>(
+    origin: &mut BodyOrigin,
+    keys: impl Iterator<Item = &'a String>,
+) {
+    if let Some(root) = origin.client.as_object_mut() {
+        for key in keys {
+            root.remove(key);
+        }
+    }
+}
 pub(crate) fn capture_origin(
     provider: &Provider,
     client: &Value,
@@ -633,7 +643,7 @@ fn constraints(profile: Profile, body: &Value) -> Result<(), String> {
     }
     for path in BUDGETS {
         if let Some(value) = body.pointer(path) {
-            if !value.as_u64().is_some_and(|v| v > 0) {
+            if value.as_u64().is_none_or(|v| v == 0) {
                 return Err(format!(
                     "parameter_policy: {path} requires a positive integer"
                 ));

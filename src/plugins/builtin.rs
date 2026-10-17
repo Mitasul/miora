@@ -242,7 +242,15 @@ pub(crate) fn build_attempt(
     if downstream_protocol == DownstreamProtocol::ResponsesCompat {
         payload = responses_to_chat_request(&payload, original_model)?;
     } else if downstream_protocol == DownstreamProtocol::MessagesCompat {
-        payload = crate::protocols::dialects::messages_to_chat(&payload, original_model)?;
+        payload = if matches!(engine.as_str(), "vertex-claude" | "aws") {
+            crate::protocols::dialects::messages_to_chat_with_thinking(
+                &payload,
+                original_model,
+                true,
+            )?
+        } else {
+            crate::protocols::dialects::messages_to_chat(&payload, original_model)?
+        };
     } else if downstream_protocol == DownstreamProtocol::GeminiCompat {
         payload = crate::protocols::dialects::gemini_to_chat_request(
             &payload,
@@ -612,6 +620,18 @@ pub(crate) fn build_attempt(
         }
         parameters::record_constraints(&before_constraints, &payload, &mut policy_report);
     }
+    if engine == "codex" && wire_path != "/v1/responses/compact" && !is_alpha_search {
+        crate::providers::codex::compat::search_history(&mut payload);
+    }
+    if matches!(engine.as_str(), "claude" | "vertex-claude" | "aws")
+        && provider
+            .preferences
+            .get("unsigned_thinking")
+            .and_then(Value::as_str)
+            == Some("strip")
+    {
+        crate::providers::anthropic::strip_unsigned_thinking(&mut payload);
+    }
     // OpenAI-compatible overrides may explicitly disable upstream streaming.
     // Decode the wire format we actually requested before adapting the result.
     let upstream_stream = if matches!(
@@ -634,6 +654,26 @@ pub(crate) fn build_attempt(
         upstream_stream,
         None,
     )?;
+    if engine == "codex" && !is_alpha_search {
+        headers.insert(
+            "session_id",
+            HeaderValue::from_str(&crate::providers::codex::compat::session_id(
+                incoming_headers,
+                &payload,
+                request_id,
+            ))
+            .map_err(|_| "Codex session ID is not a valid header".to_owned())?,
+        );
+        headers
+            .entry("openai-beta")
+            .or_insert(HeaderValue::from_static("responses=experimental"));
+        headers
+            .entry("originator")
+            .or_insert(HeaderValue::from_static("codex_cli_rs"));
+        headers
+            .entry("user-agent")
+            .or_insert(HeaderValue::from_static(CODEX_USER_AGENT));
+    }
     if is_alpha_search && engine == "codex" {
         apply_alpha_search_headers(&mut headers, incoming_headers, &payload)?;
     }

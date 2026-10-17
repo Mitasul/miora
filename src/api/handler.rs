@@ -74,6 +74,9 @@ pub(crate) async fn inference(mut state: AppState, mut request: Request) -> Resp
     if let Some(response) = cors.preflight_response(request.method(), request.headers()) {
         return response;
     }
+    if let Err(response) = crate::plugins::native::normalize_request(&state, &mut request).await {
+        return response;
+    }
     let trace = if crate::api::gateway::supports(
         request.method(),
         request.uri().path().trim_end_matches('/'),
@@ -115,13 +118,17 @@ pub(crate) async fn inference(mut state: AppState, mut request: Request) -> Resp
 }
 
 async fn handler_inner(state: AppState, request: Request) -> Response<Body> {
-    let request = match crate::transport::decompression::decode(request).await {
-        Ok(request) => request,
-        Err(response) => {
-            if let Some(context) = &state.request_log {
-                context.error_stage("request_decompression");
+    let request = if crate::plugins::native::mount(request.uri().path()).is_some() {
+        request
+    } else {
+        match crate::transport::decompression::decode(request).await {
+            Ok(request) => request,
+            Err(response) => {
+                if let Some(context) = &state.request_log {
+                    context.error_stage("request_decompression");
+                }
+                return response;
             }
-            return response;
         }
     };
     let request = if let Some(context) = &state.request_log {

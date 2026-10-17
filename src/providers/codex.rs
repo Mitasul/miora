@@ -1,3 +1,4 @@
+pub(crate) mod compat;
 pub(crate) mod models;
 pub(crate) mod oauth;
 

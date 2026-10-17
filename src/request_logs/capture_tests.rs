@@ -34,9 +34,11 @@ fn fixture(fields: Vec<CaptureField>, hours: u32, limit: usize) -> Fixture {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let logs = RequestLogs::open(std::path::PathBuf::new(), false, false).unwrap();
-    let mut settings = LogSettings::default();
-    settings.capture_fields = fields;
-    settings.body_retention_hours = hours;
+    let mut settings = LogSettings {
+        capture_fields: fields,
+        body_retention_hours: hours,
+        ..Default::default()
+    };
     settings.limits.per_request_bytes = limit as u64;
     let settings = SettingsSnapshot {
         revision: 0,
@@ -976,7 +978,7 @@ fn capture_microbench_growth_and_headers() {
                     legacy_headers(&f.context, &source);
                 }
             };
-            let locks = count_lock_entries(&f.context, &run);
+            let locks = count_lock_entries(&f.context, run);
             clear_captured_slot(&f.context, (None, CaptureField::RequestHeaders));
             let started = Instant::now();
             let mut peak = 0usize;

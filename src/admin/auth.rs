@@ -622,7 +622,9 @@ mod tests {
         headers.insert("cookie", format!("{COOKIE}={second}").parse().unwrap());
         state.logout(&headers);
         assert!(state.session(&headers).is_none());
-        assert!(state.cookie(&second).contains("Path=/; HttpOnly; SameSite=Lax"));
+        assert!(state
+            .cookie(&second)
+            .contains("Path=/; HttpOnly; SameSite=Lax"));
         assert!(state.cookie(&second).ends_with("; Secure"));
     }
     #[test]

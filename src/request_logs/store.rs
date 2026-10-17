@@ -675,7 +675,7 @@ fn redact_json(value: Value) -> Value {
             let named_secret = map
                 .get("name")
                 .and_then(Value::as_str)
-                .is_some_and(|name| secret_name(name))
+                .is_some_and(secret_name)
                 || map.get("secret") == Some(&Value::Bool(true));
             if named_secret && map.contains_key("value") {
                 map.insert("value".into(), json!("[REDACTED]"));
@@ -759,10 +759,8 @@ pub(super) fn run(
                 complete(&database, command, &shared);
             } else if shared.active.lock().unwrap().contains_key(&id) {
                 pending.insert(id, command);
-            } else {
-                if let Command::Finish(_, bytes) = command {
-                    shared.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
-                }
+            } else if let Command::Finish(_, bytes) = command {
+                shared.queued_bytes.fetch_sub(bytes, Ordering::AcqRel);
             }
         }
         Command::Query(operation, reply) => {

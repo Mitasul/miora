@@ -21,7 +21,6 @@ export async function mountWorkspace(root, { signal }) {
     status.textContent = dirty ? '未保存' : '';
   }
   async function open(path = '') {
-    if (path === 'config.yaml' && !window.confirm('源配置包含完整 API Key 等敏感信息，确认打开？')) return;
     requestController?.abort(); requestController = new AbortController();
     const token = ++sequence;
     error.textContent = '';

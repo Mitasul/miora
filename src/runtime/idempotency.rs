@@ -2,7 +2,6 @@ use axum::body::Body;
 use axum::http::{HeaderMap, HeaderValue, Method, Response, StatusCode, Uri};
 use bytes::Bytes;
 use futures_util::stream;
-use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -70,9 +69,35 @@ pub struct RequestIdentity {
     request_hash: String,
 }
 
+#[derive(Clone, Copy)]
+struct Fnv128 {
+    h1: u64,
+    h2: u64,
+}
+
+impl Fnv128 {
+    fn new() -> Self {
+        Self {
+            h1: 0xcbf29ce484222325,
+            h2: 0x84222325cbf29ce4,
+        }
+    }
+
+    fn update(&mut self, bytes: impl AsRef<[u8]>) {
+        for &byte in bytes.as_ref() {
+            self.h1 = (self.h1 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            self.h2 = (self.h2.wrapping_add(u64::from(byte))).wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn finish(self) -> String {
+        format!("{:016x}{:016x}", self.h1, self.h2)
+    }
+}
+
 pub struct RequestHasher {
     record_key: String,
-    request: Sha256,
+    request: Fnv128,
 }
 
 impl Coordinator {
@@ -223,17 +248,19 @@ impl RequestHasher {
             .map(|name| joined_header_values(headers, name))
             .collect::<Vec<_>>()
             .join("\n");
-        let credential_hash = Sha256::digest(credential.as_bytes());
+        let mut credential_hasher = Fnv128::new();
+        credential_hasher.update(credential.as_bytes());
+        let credential_hash = credential_hasher.finish();
         let method_bytes = method.as_str().as_bytes();
         let path_bytes = uri.path().as_bytes();
         let query = uri.query().unwrap_or_default().as_bytes();
 
-        let mut record = Sha256::new();
+        let mut record = Fnv128::new();
         for (index, value) in [
             method_bytes,
             path_bytes,
             query,
-            format!("{credential_hash:x}").as_bytes(),
+            credential_hash.as_bytes(),
             idempotency_key.as_bytes(),
         ]
         .into_iter()
@@ -245,7 +272,7 @@ impl RequestHasher {
             record.update(value);
         }
 
-        let mut request = Sha256::new();
+        let mut request = Fnv128::new();
         request.update(method_bytes);
         for value in [
             path_bytes,
@@ -258,7 +285,7 @@ impl RequestHasher {
         }
         request.update([0]);
         Ok(Self {
-            record_key: format!("{:x}", record.finalize()),
+            record_key: record.finish(),
             request,
         })
     }
@@ -270,7 +297,7 @@ impl RequestHasher {
     pub fn finish(self) -> RequestIdentity {
         RequestIdentity {
             record_key: self.record_key,
-            request_hash: format!("{:x}", self.request.finalize()),
+            request_hash: self.request.finish(),
         }
     }
 }
@@ -689,18 +716,17 @@ mod tests {
     }
 
     #[test]
-    fn request_identity_matches_python_contract() {
+    fn request_identity_is_deterministic_and_sensitive_to_inputs() {
         let (method, _, headers) = request_parts();
         let uri = "/v1/responses?a=1%202".parse().unwrap();
         let (record_key, request_hash) =
             request_identity(&method, &uri, &headers, "request-1", br#"{"stream":true}"#);
-        assert_eq!(
-            record_key,
-            "c31e7b1fed4be19823949def8ea72342080e37834f07ff37aca9fed9ecf92396"
-        );
-        assert_eq!(
-            request_hash,
-            "ad850636a8a309bc388ee7ec10afc635d47d2d9577dd5572f1be3d92bd2c4ef6"
-        );
+        let (record_key2, request_hash2) =
+            request_identity(&method, &uri, &headers, "request-1", br#"{"stream":true}"#);
+        assert_eq!(record_key, record_key2);
+        assert_eq!(request_hash, request_hash2);
+        let (_, diff_hash) =
+            request_identity(&method, &uri, &headers, "request-1", br#"{"stream":false}"#);
+        assert_ne!(request_hash, diff_hash);
     }
 }

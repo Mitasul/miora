@@ -39,6 +39,9 @@ pub(crate) const PUBLIC_JSON_ROUTES: &[&str] = &[
 ];
 
 pub fn supports(method: &Method, path: &str) -> bool {
+    if crate::plugins::native::mount(path).is_some() {
+        return true;
+    }
     if *method == Method::POST
         && (crate::protocols::dialects::gemini_route(path).is_some()
             || PUBLIC_JSON_ROUTES.contains(&path)
@@ -103,11 +106,17 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
         .map(|auth| auth.api_key.role.to_string())
         .unwrap_or_default();
 
-    let input = match prepare_input(&state, request, &method, &uri, &path, resource_wait).await {
+    let native = crate::plugins::native::mount(uri.path());
+    let prepared_input = if native.is_some() {
+        crate::plugins::native::prepare_input(&state, request, &method, &uri, resource_wait).await
+    } else {
+        prepare_input(&state, request, &method, &uri, &path, resource_wait).await
+    };
+    let input = match prepared_input {
         Ok(input) => input,
         Err(response) => return response,
     };
-    if method != Method::GET {
+    if method != Method::GET && input.replay.is_none() {
         if let Some(payload) = input.payload.as_ref() {
             if let Some(field) = missing_required_field(&path, payload) {
                 return validation_error(field);
@@ -149,7 +158,8 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
                 .unwrap_or(false),
         );
     }
-    if path != "/v1/moderations"
+    if native.is_none()
+        && path != "/v1/moderations"
         && state
             .runtime
             .moderation_enabled(&headers)
@@ -166,7 +176,10 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
         }
     }
     let body_bytes = input.observation.body_bytes;
-    let request_type = (path == "/v1/responses/compact").then_some("compaction");
+    let policy_path = native
+        .as_ref()
+        .map_or(path.as_str(), |(_, path)| path.trim_end_matches('/'));
+    let request_type = (policy_path == "/v1/responses/compact").then_some("compaction");
     let mut resolved = match state
         .runtime
         .resolve_route(
@@ -195,19 +208,27 @@ pub async fn handle(state: AppState, request: Request, resource_wait: Duration) 
         }
     }
     let retry_policy = state.runtime.retry_policy(&headers).await;
-    let max_attempts = retry_policy.max_attempts(
-        &resolved.providers,
-        headers.contains_key(crate::routing::planner::TARGET_PROVIDER_HEADER),
-    );
+    let max_attempts = if native.is_some() {
+        1
+    } else {
+        retry_policy.max_attempts(
+            &resolved.providers,
+            headers.contains_key(crate::routing::planner::TARGET_PROVIDER_HEADER),
+        )
+    };
     let hedging = if max_attempts > 1 {
         resolved.hedging
     } else {
         Default::default()
     };
-    let auto_retry = retry_policy.enabled();
-    let (input, image_reservations) = match prepare_image_inputs(&state, input).await {
-        Ok(prepared) => prepared,
-        Err((status, detail)) => return json_error(status, &detail),
+    let auto_retry = native.is_none() && retry_policy.enabled();
+    let (input, image_reservations) = if native.is_some() {
+        (input, Vec::new())
+    } else {
+        match prepare_image_inputs(&state, input).await {
+            Ok(prepared) => prepared,
+            Err((status, detail)) => return json_error(status, &detail),
+        }
     };
     let (prompt_price, completion_price) = state.runtime.prices_for_model(&request_model).await;
     let use_chat_stream = path == "/v1/chat/completions"

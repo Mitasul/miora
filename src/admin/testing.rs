@@ -364,14 +364,22 @@ async fn run_direct_channel_test(state: &AppState, input: TestRequest) -> ApiRes
             )
             .await
             .map_err(|message| {
-                error(StatusCode::UNAUTHORIZED, "oauth_resolution_failed", &message)
+                error(
+                    StatusCode::UNAUTHORIZED,
+                    "oauth_resolution_failed",
+                    &message,
+                )
             })?;
         provider_key = auth.bearer;
         codex_account_id = auth.account_id;
     }
-    let uri: Uri = endpoint
-        .parse()
-        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_model_test", "Invalid endpoint"))?;
+    let uri: Uri = endpoint.parse().map_err(|_| {
+        error(
+            StatusCode::BAD_REQUEST,
+            "invalid_model_test",
+            "Invalid endpoint",
+        )
+    })?;
     let request_id = format!("test-{}", crate::runtime::clock::unix_millis());
     let prepared_input = crate::providers::types::PreparedInput {
         payload: Some(payload),
@@ -470,7 +478,11 @@ async fn run_direct_channel_test(state: &AppState, input: TestRequest) -> ApiRes
         })?
 }
 
-fn direct_test_payload(input: &TestRequest, endpoint: &str, model_name: &str) -> Result<Value, String> {
+fn direct_test_payload(
+    input: &TestRequest,
+    endpoint: &str,
+    model_name: &str,
+) -> Result<Value, String> {
     let mut payload = if input.request.as_object().is_some_and(|obj| !obj.is_empty()) {
         if endpoint == "/v1/responses" && input.endpoint == "/v1/chat/completions" {
             crate::protocols::conversion::chat_to_responses(&input.request, model_name)?

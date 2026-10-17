@@ -20,6 +20,7 @@ pub(crate) enum ResponseAdapter {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DownstreamProtocol {
     Native,
+    NativeProxy,
     ResponsesCompat,
     MessagesCompat,
     GeminiCompat,
@@ -48,6 +49,11 @@ pub(crate) struct PreparedAttempt {
 pub(crate) enum AttemptBody {
     Json(Vec<u8>),
     Replay(StoredBody, SpoolObservation),
+    PluginResource {
+        envelope: Vec<u8>,
+        storage: StoredBody,
+        observation: SpoolObservation,
+    },
     MultipartRewrite {
         storage: StoredBody,
         observation: SpoolObservation,

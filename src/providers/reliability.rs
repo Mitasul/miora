@@ -30,7 +30,7 @@ pub(crate) fn validate(preferences: &Value) -> Result<(), String> {
                 })
                 || policy
                     .get("budget_tokens")
-                    .is_some_and(|budget| !budget.as_u64().is_some_and(|budget| budget >= 1024))
+                    .is_some_and(|budget| budget.as_u64().is_none_or(|budget| budget < 1024))
             {
                 return Err("Reasoning suffix policy accepts effort (low/medium/high) and budget_tokens >= 1024".into());
             }

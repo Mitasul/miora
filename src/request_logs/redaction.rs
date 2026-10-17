@@ -500,16 +500,14 @@ pub(super) fn redact(
             }
             let tail = raw[offset..].iter().any(|b| !b.is_ascii_whitespace());
             let complete = source_complete && !clipped && !tail && reason.is_none();
-            let reason = reason.or_else(|| {
-                if clipped {
-                    Some("request_capture_size_limit")
-                } else if tail {
-                    Some("unterminated_sse_frame_not_saved")
-                } else if !source_complete {
-                    Some("source_incomplete")
-                } else {
-                    None
-                }
+            let reason = reason.or(if clipped {
+                Some("request_capture_size_limit")
+            } else if tail {
+                Some("unterminated_sse_frame_not_saved")
+            } else if !source_complete {
+                Some("source_incomplete")
+            } else {
+                None
             });
             let state = if complete {
                 "available"

@@ -66,13 +66,13 @@ export async function stream(path, body, { signal, onEvent }) {
   } finally { await reader.cancel(); reader.releaseLock(); }
 }
 export const get = (path, options) => request(path, options);
-export const post = (path, body = {}) => request(path, { method: 'POST', body });
+export const post = (path, body = {}, options = {}) => request(path, { ...options, method: 'POST', body });
 export const patch = (path, body) => request(path, { method: 'PATCH', body });
 export const put = (path, body) => request(path, { method: 'PUT', body });
 export const remove = (path, body) => request(path, { method: 'DELETE', body });
-export function upload(path, file, options = {}) {
+export function upload(path, file, options = {}, requestOptions = {}) {
   const body = new FormData();
   body.append('file', file);
   body.append('options', JSON.stringify(options));
-  return request(path, { method: 'POST', body });
+  return request(path, { ...requestOptions, method: 'POST', body });
 }

@@ -35,10 +35,9 @@ mod gateway_features {
             tokio_postgres::config::SslMode::Disable
         );
         assert!(
-            postgres_url_config("postgres://user:private@db/app?unknown=1")
+            !postgres_url_config("postgres://user:private@db/app?unknown=1")
                 .unwrap_err()
-                .find("private")
-                .is_none()
+                .contains("private")
         );
     }
     #[test]
@@ -164,6 +163,7 @@ pub struct ChannelStat {
     pub stream: bool,
 }
 
+#[allow(clippy::large_enum_variant)]
 enum WriteEvent {
     Request(RequestStat),
     Channel(ChannelStat),

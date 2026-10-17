@@ -7,7 +7,7 @@ use serde_json::{json, Map, Value};
 use std::time::Duration;
 
 const FILE_LIMIT: usize = 256 * 1024;
-const BODY_LIMIT: usize = 512 * 1024;
+const BODY_LIMIT: usize = 17 * 1024 * 1024;
 const FORMAT: &str = "miora.plugin.v1";
 type UploadError = (StatusCode, String);
 
@@ -28,6 +28,11 @@ struct Package {
 struct Options {
     #[serde(default)]
     expected_revision: u64,
+}
+
+pub(super) enum Upload {
+    Service(Registration),
+    Managed { bytes: bytes::Bytes, expected: u64 },
 }
 
 fn invalid(message: &str) -> UploadError {
@@ -52,10 +57,12 @@ fn decode(bytes: &[u8], options: Options) -> Result<Registration, UploadError> {
         config: package.config,
         service_auth: package.service_auth,
         expected_revision: options.expected_revision,
+        managed: None,
+        runtime: None,
     })
 }
 
-pub(super) async fn read(request: Request<Body>) -> Result<Registration, UploadError> {
+pub(super) async fn read(request: Request<Body>) -> Result<Upload, UploadError> {
     let boundary = request
         .headers()
         .get("content-type")
@@ -76,7 +83,7 @@ pub(super) async fn read(request: Request<Body>) -> Result<Registration, UploadE
     .map_err(|_| {
         (
             StatusCode::PAYLOAD_TOO_LARGE,
-            "Plugin upload exceeds 512 KiB".to_owned(),
+            "Plugin upload exceeds 17 MiB".to_owned(),
         )
     })?;
     let stream = futures_util::stream::once(async move { Ok::<_, std::io::Error>(bytes) });
@@ -109,10 +116,22 @@ pub(super) async fn read(request: Request<Body>) -> Result<Registration, UploadE
             _ => return Err(invalid("Duplicate or unknown plugin upload field")),
         }
     }
-    decode(
-        &file.ok_or_else(|| invalid("Select a plugin file"))?,
-        options.unwrap_or_default(),
-    )
+    let file = file.ok_or_else(|| invalid("Select a plugin file"))?;
+    let options = options.unwrap_or_default();
+    if file.starts_with(b"PK\x03\x04") {
+        if file.len() > 16 * 1024 * 1024 {
+            return Err((
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "Plugin archive exceeds 16 MiB".into(),
+            ));
+        }
+        Ok(Upload::Managed {
+            bytes: file,
+            expected: options.expected_revision,
+        })
+    } else {
+        decode(&file, options).map(Upload::Service)
+    }
 }
 
 pub(super) fn template() -> Value {
@@ -168,7 +187,9 @@ mod tests {
 
     #[test]
     fn package_size_limit_is_enforced_before_parsing() {
-        let error = decode(&vec![b' '; FILE_LIMIT + 1], Options::default()).err().unwrap();
+        let error = decode(&vec![b' '; FILE_LIMIT + 1], Options::default())
+            .err()
+            .unwrap();
         assert_eq!(error.0, StatusCode::PAYLOAD_TOO_LARGE);
         assert!(decode(b"", Options::default()).is_err());
     }

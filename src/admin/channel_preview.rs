@@ -99,10 +99,10 @@ pub(super) async fn handle(state: &AppState, request: Request, schema_only: bool
     if document.get("provider").and_then(Value::as_str).is_none() {
         document["provider"] = json!("admin-preview");
     }
-    if !document
+    if document
         .get("model")
         .and_then(Value::as_array)
-        .is_some_and(|models| !models.is_empty())
+        .is_none_or(|models| models.is_empty())
     {
         document["model"] = json!([requested_model]);
     }
@@ -342,7 +342,9 @@ fn compile_test_provider(
                 item.as_str() == Some(model_name.as_str())
                     || item.as_object().is_some_and(|map| {
                         map.contains_key(&model_name)
-                            || map.values().any(|v| v.as_str() == Some(model_name.as_str()))
+                            || map
+                                .values()
+                                .any(|v| v.as_str() == Some(model_name.as_str()))
                     })
             })
         });
@@ -848,11 +850,20 @@ mod tests {
         let patch = json!({"preferences":{"usage_pricing":{"models":{"after":{"input":3},"other":{"output":5}}}}});
         let merged = merge_channel(&original, &patch).unwrap();
         assert_eq!(merged["preferences"]["usage_pricing"]["input"], 2);
-        assert!(merged["preferences"]["usage_pricing"]["models"].get("before").is_none());
-        assert_eq!(merged["preferences"]["usage_pricing"]["models"]["after"]["input"], 3);
+        assert!(merged["preferences"]["usage_pricing"]["models"]
+            .get("before")
+            .is_none());
+        assert_eq!(
+            merged["preferences"]["usage_pricing"]["models"]["after"]["input"],
+            3
+        );
         assert_eq!(merged["preferences"]["unrelated"], true);
         assert_eq!(merged["api"], "private-key");
-        let cleared = merge_channel(&merged, &json!({"preferences":{"usage_pricing":{"models":{}}}})).unwrap();
+        let cleared = merge_channel(
+            &merged,
+            &json!({"preferences":{"usage_pricing":{"models":{}}}}),
+        )
+        .unwrap();
         assert_eq!(cleared["preferences"]["usage_pricing"]["models"], json!({}));
     }
 

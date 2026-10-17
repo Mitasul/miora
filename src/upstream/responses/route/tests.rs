@@ -35,6 +35,87 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
+#[test]
+fn migration_compat_native_codex_final_fields_keep_session_and_cache_metadata() {
+    let provider = provider();
+    let original = json!({"model":"gpt-public","input":[{"type":"web_search_call","id":"history-search"}],"tools":[],"tool_choice":"auto","prompt_cache_key":"same/cache","client_metadata":{"session":"keep"}});
+    let mut payload = original.clone();
+    compile_payload(
+        &mut payload,
+        &provider,
+        "gpt-public",
+        "gpt-upstream",
+        "codex",
+        false,
+    )
+    .unwrap();
+    assert_eq!(payload["prompt_cache_key"], original["prompt_cache_key"]);
+    assert_eq!(payload["client_metadata"], original["client_metadata"]);
+    assert_eq!(payload["tool_choice"], "none");
+    assert_eq!(payload["tools"], json!([{"type":"web_search"}]));
+    let first = super::build_headers(
+        &HeaderMap::new(),
+        &provider,
+        "key",
+        "codex",
+        true,
+        "request-one",
+        "attempt-one",
+        &payload,
+    )
+    .unwrap();
+    let second = super::build_headers(
+        &HeaderMap::new(),
+        &provider,
+        "key",
+        "codex",
+        true,
+        "request-two",
+        "attempt-two",
+        &payload,
+    )
+    .unwrap();
+    assert_eq!(first["Session_id"], "same%2Fcache");
+    assert_eq!(first["Session_id"], second["Session_id"]);
+    assert_ne!(first["x-request-id"], second["x-request-id"]);
+    let mut incoming = HeaderMap::new();
+    incoming.insert("Session-Id", "explicit-session".parse().unwrap());
+    let headers = super::build_headers(
+        &incoming,
+        &provider,
+        "key",
+        "codex",
+        true,
+        "request-three",
+        "attempt-three",
+        &payload,
+    )
+    .unwrap();
+    assert_eq!(headers["Session_id"], "explicit-session");
+    let repaired = payload.clone();
+    compile_payload(
+        &mut payload,
+        &provider,
+        "gpt-public",
+        "gpt-upstream",
+        "codex",
+        false,
+    )
+    .unwrap();
+    assert_eq!(payload, repaired);
+    let mut compact = original;
+    compile_payload(
+        &mut compact,
+        &provider,
+        "gpt-public",
+        "gpt-upstream",
+        "codex",
+        true,
+    )
+    .unwrap();
+    assert_eq!(compact["tools"], json!([]));
+}
+
 fn provider() -> Provider {
     Provider {
         credential: crate::config::snapshot::ProviderCredential::Pooled,

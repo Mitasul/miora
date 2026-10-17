@@ -28,6 +28,8 @@ pub(crate) struct Authentication {
     pub config_key: String,
     #[serde(default)]
     pub header: String,
+    #[serde(default)]
+    pub query: String,
 }
 impl Default for Authentication {
     fn default() -> Self {
@@ -35,6 +37,7 @@ impl Default for Authentication {
             kind: "none".into(),
             config_key: String::new(),
             header: String::new(),
+            query: String::new(),
         }
     }
 }
@@ -44,11 +47,16 @@ fn none() -> String {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct Capabilities {
+    #[serde(default)]
     pub endpoints: Vec<String>,
+    #[serde(default = "request_formats")]
+    pub request_formats: Vec<String>,
     #[serde(default)]
     pub streaming: bool,
     #[serde(default)]
     pub model_discovery: bool,
+    #[serde(default)]
+    pub oauth: bool,
 }
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,7 +75,21 @@ pub(crate) struct Manifest {
     #[serde(default)]
     pub description: String,
     #[serde(default)]
+    pub author: String,
+    #[serde(default)]
+    pub changelog: String,
+    #[serde(default = "sdk_version")]
+    pub sdk_version: u32,
+    #[serde(default)]
+    pub permissions: Vec<String>,
+    #[serde(default)]
+    pub config_aliases: std::collections::BTreeMap<String, String>,
+    #[serde(default)]
     pub config_schema: Vec<ConfigField>,
+    #[serde(default)]
+    pub request_schema: Vec<ConfigField>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_proxy: Option<super::native::NativeProxy>,
     #[serde(default)]
     pub auth: Authentication,
     pub capabilities: Capabilities,
@@ -81,12 +103,18 @@ pub(crate) fn valid_id(id: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-' || b == b'_')
 }
+fn sdk_version() -> u32 {
+    1
+}
+fn request_formats() -> Vec<String> {
+    vec!["json".into()]
+}
 impl Manifest {
     pub fn validate(&self) -> Result<(), String> {
         if !valid_id(&self.id) || self.id.starts_with("builtin-") {
             return Err("invalid or reserved plugin id".into());
         }
-        if self.api_version != 1 {
+        if self.api_version != 1 || self.sdk_version != 1 {
             return Err("unsupported plugin api_version".into());
         }
         if self.name.trim().is_empty()
@@ -98,11 +126,15 @@ impl Manifest {
             return Err("invalid manifest metadata".into());
         }
         let supported = [
+            "/v1/messages",
             "/v1/chat/completions",
             "/v1/responses",
             "/v1/responses/compact",
             "/v1/embeddings",
             "/v1/images/generations",
+            "/v1/images/edits",
+            "/v1/audio/transcriptions",
+            "/v1/video/tasks",
             "/v1/audio/speech",
             "/v1/moderations",
             "/v1/rerank",
@@ -110,19 +142,60 @@ impl Manifest {
             "/search",
             "/v1/alpha/search",
         ];
-        if self.capabilities.endpoints.is_empty()
+        if (self.capabilities.endpoints.is_empty() && self.native_proxy.is_none())
             || self
                 .capabilities
                 .endpoints
                 .iter()
                 .any(|e| !supported.contains(&e.as_str()))
         {
-            return Err(
-                "unsupported or missing plugin endpoints (v1 accepts JSON requests only)".into(),
-            );
+            return Err("unsupported or missing plugin endpoints".into());
+        }
+        if let Some(native) = &self.native_proxy {
+            native.validate()?;
+        }
+        if self.capabilities.request_formats.is_empty()
+            || self
+                .capabilities
+                .request_formats
+                .iter()
+                .any(|format| !["json", "form", "multipart", "binary"].contains(&format.as_str()))
+        {
+            return Err("unsupported or missing plugin request formats".into());
+        }
+        let mut request_keys = BTreeSet::new();
+        if self.request_schema.len() > 128 {
+            return Err("request schema size limit exceeded".into());
+        }
+        for field in &self.request_schema {
+            if field.key.is_empty()
+                || field.key.len() > 128
+                || !request_keys.insert(&field.key)
+                || ![
+                    "string", "integer", "number", "boolean", "object", "array", "resource",
+                ]
+                .contains(&field.kind.as_str())
+                || (field.kind == "resource"
+                    && (field.default.is_some() || !field.choices.is_empty()))
+            {
+                return Err("invalid or duplicate plugin request field".into());
+            }
+            if let Some(value) = &field.default {
+                field.validate(value)?;
+            }
+            if field.choices.iter().any(|value| !field.matches(value)) {
+                return Err("request enum value does not match field type".into());
+            }
         }
         if self.config_schema.len() > 128 || self.models.len() > 4096 {
             return Err("manifest size limit exceeded".into());
+        }
+        if self.config_aliases.iter().any(|(target, source)| {
+            !valid_id(source)
+                || target == source
+                || !self.config_schema.iter().any(|field| field.key == *target)
+        }) {
+            return Err("invalid configuration aliases".into());
         }
         let mut keys = BTreeSet::new();
         for field in &self.config_schema {
@@ -148,7 +221,7 @@ impl Manifest {
         } else {
             &self.auth.kind
         };
-        if !["none", "bearer", "api_key"].contains(&kind) {
+        if !["none", "bearer", "api_key", "query"].contains(&kind) {
             return Err("unsupported channel authentication".into());
         }
         if kind != "none"
@@ -165,6 +238,9 @@ impl Manifest {
         {
             return Err("invalid upstream authentication header declaration".into());
         }
+        if kind == "query" && (self.auth.query.is_empty() || self.native_proxy.is_none()) {
+            return Err("query authentication requires a native proxy and query name".into());
+        }
         if self
             .models
             .iter()
@@ -180,14 +256,22 @@ impl Manifest {
         require: bool,
     ) -> Result<Map<String, Value>, String> {
         let mut result = Map::new();
-        if input
-            .keys()
-            .any(|k| !self.config_schema.iter().any(|f| &f.key == k))
-        {
+        if input.keys().any(|k| {
+            !self.config_schema.iter().any(|f| &f.key == k)
+                && !self.config_aliases.values().any(|source| source == k)
+        }) {
             return Err("unknown plugin configuration field".into());
         }
         for field in &self.config_schema {
-            match input.get(&field.key).or(field.default.as_ref()) {
+            match input
+                .get(&field.key)
+                .or_else(|| {
+                    self.config_aliases
+                        .get(&field.key)
+                        .and_then(|source| input.get(source))
+                })
+                .or(field.default.as_ref())
+            {
                 Some(v) => {
                     field.validate(v)?;
                     result.insert(field.key.clone(), v.clone());

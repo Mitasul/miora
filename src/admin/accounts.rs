@@ -157,6 +157,10 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
         )
     })?;
     if method == Method::POST && input.oauth_only {
+        if let Some(imported) = &input.import {
+            let credentials = import_accounts(state, imported, &input.provider).await?;
+            return Ok(json!({"ok":true,"credentials":credentials}));
+        }
         let exchange = input.oauth_exchange.as_ref().ok_or_else(|| {
             error(
                 StatusCode::BAD_REQUEST,
@@ -182,9 +186,7 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
                 None,
             )
             .await
-            .map_err(|message| {
-                error(StatusCode::BAD_GATEWAY, "oauth_exchange_failed", &message)
-            })?;
+            .map_err(|message| error(StatusCode::BAD_GATEWAY, "oauth_exchange_failed", &message))?;
         let oauth = state.codex_oauth.status(&raw_key).await;
         return Ok(json!({"ok":true,"credential":raw_key,"oauth":oauth}));
     }
@@ -275,7 +277,9 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
                     proxy,
                 )
                 .await
-                .map_err(|message| error(StatusCode::BAD_GATEWAY, "oauth_exchange_failed", &message))?;
+                .map_err(|message| {
+                    error(StatusCode::BAD_GATEWAY, "oauth_exchange_failed", &message)
+                })?;
             vec![raw_key]
         } else {
             let import_val = input.import.as_ref().ok_or_else(|| {
@@ -285,16 +289,7 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
                     "Provide key strings or an account JSON document",
                 )
             })?;
-            let pairs = import_keys_with_metadata(import_val, &engine)
-                .map_err(|message| error(StatusCode::BAD_REQUEST, "invalid_import", &message))?;
-            let mut keys_out = Vec::with_capacity(pairs.len());
-            for (key, meta_entry) in pairs {
-                if let Some(entry) = meta_entry {
-                    state.codex_oauth.record_imported_metadata(&key, entry).await;
-                }
-                keys_out.push(key);
-            }
-            keys_out
+            import_accounts(state, import_val, &engine).await?
         };
         let mut existing = crate::config::snapshot::provider_api_keys(&row["api"]);
         if existing.len() + imported.len() > 4096 {
@@ -375,6 +370,31 @@ pub(super) async fn change(state: &AppState, request: Request) -> ApiResult {
     Ok(json!({"ok":true,"persistence":"source_file"}))
 }
 
+async fn import_accounts(state: &AppState, value: &Value, engine: &str) -> ApiResultKeys {
+    let pairs = import_keys_with_metadata(value, engine)
+        .map_err(|message| error(StatusCode::BAD_REQUEST, "invalid_import", &message))?;
+    let mut keys = Vec::with_capacity(pairs.len());
+    for (key, metadata) in pairs {
+        if let Some(entry) = metadata {
+            state
+                .codex_oauth
+                .record_imported_metadata(&key, entry)
+                .await
+                .map_err(|message| {
+                    error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "oauth_import_failed",
+                        &message,
+                    )
+                })?;
+        }
+        keys.push(key);
+    }
+    Ok(keys)
+}
+
+type ApiResultKeys = Result<Vec<String>, Response<Body>>;
+
 #[cfg(test)]
 pub(crate) fn import_keys(value: &Value, engine: &str) -> Result<Vec<String>, String> {
     Ok(import_keys_with_metadata(value, engine)?
@@ -410,6 +430,11 @@ fn import_keys_with_metadata<'a>(
                 let account = tokens["account_id"]
                     .as_str()
                     .filter(|v| !v.trim().is_empty())
+                    .or_else(|| {
+                        entry["account_id"]
+                            .as_str()
+                            .filter(|value| !value.trim().is_empty())
+                    })
                     .or(jwt_meta.account_id.as_deref())
                     .unwrap_or_default();
                 if account.contains(',') {
@@ -427,15 +452,31 @@ fn import_keys_with_metadata<'a>(
                 return Err("Codex account requires refresh_token or access_token".into());
             }
         } else {
-            let oauth_token = entry
-                .pointer("/claudeAiOauth/accessToken")
-                .or_else(|| entry.get("access_token"))
-                .or_else(|| entry.get("api_key"))
+            let tokens = entry
+                .get("claudeAiOauth")
+                .or_else(|| entry.get("tokens"))
+                .unwrap_or(entry);
+            if let Some(refresh) = tokens
+                .get("refresh_token")
+                .or_else(|| tokens.get("refreshToken"))
                 .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|token| !token.is_empty())
-                .ok_or("Account requires api_key or access_token; OAuth refresh-token import is currently implemented for Codex only")?;
-            (oauth_token.to_owned(), Some(entry))
+                .filter(|value| !value.trim().is_empty())
+                .filter(|_| matches!(engine, "claude" | "antigravity"))
+            {
+                (format!("oauth:{engine},{}", refresh.trim()), Some(entry))
+            } else {
+                let oauth_token = entry
+                    .pointer("/claudeAiOauth/accessToken")
+                    .or_else(|| entry.get("access_token"))
+                    .or_else(|| entry.get("api_key"))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|token| !token.is_empty())
+                    .ok_or(
+                        "Account requires api_key, access_token or a supported OAuth refresh_token",
+                    )?;
+                (oauth_token.to_owned(), Some(entry))
+            }
         };
         if key.is_empty() || key.len() > 16384 || key.chars().any(char::is_control) {
             return Err(
@@ -460,7 +501,10 @@ mod gateway_features {
             import_keys(&json!(["first",{"api_key":"second"}]), "gemini").unwrap(),
             vec!["first", "second"]
         );
-        assert!(import_keys(&json!({"tokens":{"refresh_token":"secret"}}), "claude").is_err());
+        assert_eq!(
+            import_keys(&json!({"tokens":{"refresh_token":"secret"}}), "claude").unwrap(),
+            vec!["oauth:claude,secret"]
+        );
         assert!(import_keys(&json!(["bad\nkey"]), "gpt").is_err());
     }
 }

@@ -80,6 +80,8 @@ pub(crate) fn responses_to_chat_request(
         "top_p",
         "parallel_tool_calls",
         "service_tier",
+        "prompt_cache_key",
+        "client_metadata",
         "reasoning",
         "reasoning_effort",
         "modalities",
@@ -157,10 +159,11 @@ pub(crate) fn responses_input_to_chat_content(content: Option<&Value>) -> Value 
                     "type":"text",
                     "text":part.get("text").cloned().unwrap_or_else(|| Value::String(String::new())),
                 })),
-                Some("input_image") => Some(json!({
-                    "type":"image_url",
-                    "image_url":{"url":part.get("image_url").cloned().unwrap_or(Value::Null)},
-                })),
+                Some("input_image") => {
+                    let mut image = json!({"type":"image_url","image_url":{"url":part.get("image_url").cloned().unwrap_or(Value::Null)}});
+                    if let Some(detail) = part.get("detail") { image["image_url"]["detail"] = detail.clone(); }
+                    Some(image)
+                },
                 Some("input_audio") => Some(json!({
                     "type":"input_audio",
                     "input_audio":part.get("input_audio").cloned().unwrap_or_else(|| {
@@ -224,6 +227,11 @@ pub(crate) fn chat_to_responses(input: &Value, original_model: &str) -> Result<V
     output.insert("input".into(), Value::Array(items));
     output.insert("stream".into(), Value::Bool(false));
     output.insert("store".into(), Value::Bool(false));
+    for name in ["prompt_cache_key", "client_metadata"] {
+        if let Some(value) = root.get(name) {
+            output.insert(name.into(), value.clone());
+        }
+    }
     if let Some(max_tokens) = root.get("max_tokens") {
         output.insert("max_output_tokens".into(), max_tokens.clone());
     }
@@ -326,10 +334,13 @@ pub(crate) fn responses_content(content: &Value, role: &str) -> Value {
                 "type": if role == "assistant" { "output_text" } else { "input_text" },
                 "text": item.get("text").cloned().unwrap_or(Value::String(String::new())),
             })),
-            Some("image_url") => parts.push(json!({
-                "type":"input_image",
-                "image_url":item.pointer("/image_url/url").cloned().unwrap_or(Value::Null),
-            })),
+            Some("image_url") => {
+                let mut image = json!({"type":"input_image","image_url":item.pointer("/image_url/url").cloned().unwrap_or(Value::Null)});
+                if let Some(detail) = item.pointer("/image_url/detail") {
+                    image["detail"] = detail.clone();
+                }
+                parts.push(image);
+            }
             _ => parts.push(item.clone()),
         }
     }

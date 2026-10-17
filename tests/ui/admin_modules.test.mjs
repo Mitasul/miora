@@ -284,6 +284,46 @@ await test('usage dashboard: model markup is escaped and partial reporting is vi
 const pluginManager = await import(dataURL((await source('plugin-manager.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL))));
 const pluginPackage = () => ({ format: 'miora.plugin.v1', manifest: { id: 'echo', name: 'Echo', version: '1.0.0', api_version: 1, config_schema: [{ key: 'credential', type: 'string', required: true, secret: true }], capabilities: { endpoints: ['/v1/chat/completions'] } }, endpoint: 'http://127.0.0.1:8765', config: { enabled: false, limit: 0 } });
 const parsePlugin = value => pluginManager.parsePluginFile(JSON.stringify(value));
+await test('managed plugin list exposes execution kind, versions, SDK, channels and errors', () => {
+  const html = pluginManager.pluginList([{ kind: 'managed', id: 'python-example', enabled: true, status: 'failed', revision: 8, installed_version: '2.0.0', active_version: '1.0.0', last_error: '<failed>', channels: ['alpha', 'beta'], manifest: { ...pluginPackage().manifest, author: '<author>', sdk_version: 1 } }]);
+  assert.ok(html.includes('python-example') && html.includes('托管 Python'));
+  assert.ok(html.includes('已装 v2.0.0') && html.includes('启用 v1.0.0') && html.includes('修订 8'));
+  assert.ok(html.includes('SDK 1') && html.includes('alpha、beta') && html.includes('加载失败'));
+  assert.ok(html.includes('&lt;failed&gt;') && html.includes('&lt;author&gt;'));
+  assert.ok(html.includes('create-channel-from-plugin') && html.includes('plugin-logs'));
+  assert.ok(!pluginManager.pluginList([{ kind: 'managed', id: 'python-example' }], 'builtin').includes('python-example'));
+});
+await test('plugin update preview separates release changes from internal revision', () => {
+  const previous = { manifest: pluginPackage().manifest, revision: 20, requirements: ['old==1'] };
+  const next = { manifest: { ...previous.manifest, version: '2.0.0', permissions: ['network'], config_schema: [...previous.manifest.config_schema, { key: 'region', type: 'string' }] }, requirements: ['old==1', 'new==2'] };
+  assert.deepEqual(pluginManager.pluginChanges(previous, next), { dependencies: ['new==2'], permissions: ['network'], fields: ['region'], requestFields: [], formats: [], nativeProxyChanged: false });
+});
+await test('ZIP upload previews without executing and installs directly with long install timeout', async () => {
+  let options;
+  const calls = [], listeners = new Map();
+  const metadata = { kind: 'managed', requirements: [], manifest: pluginPackage().manifest };
+  const module = runInNewContext((await source('plugin-manager.js')).replace(/^import .*;$/gm, '').replace(/\bexport /g, '') + '\n({openPluginUpload})', {
+    api: { upload: async (...args) => { calls.push(args); return args[0].endsWith('/preview') ? metadata : { plugin: {} }; } },
+    icon: () => '', aiIcon: () => '', channelBrand: () => '', esc: ui.esc, badge: () => '', empty: () => '', toast: () => {}, dialog: value => { options = value; }, AbortController,
+  });
+  const input = { files: [{ name: 'example.zip', size: 1024 }], addEventListener: (name, listener) => listeners.set(name, listener), disabled: false };
+  const preview = { hidden: true, innerHTML: '' }, error = { hidden: true }, submit = { disabled: false };
+  const form = { elements: { plugin_file: input }, getAttribute: () => null, querySelector: selector => ({ '#plugin-drop-zone': { addEventListener() {} }, '#plugin-file-preview': preview, '#plugin-file-error': error, 'button[type="submit"]': submit, '.dialog-error': error })[selector] };
+  module.openPluginUpload([], async () => {});
+  options.onMount(form);
+  await listeners.get('change')();
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], '/plugins/preview');
+  assert.equal(calls[0][3].timeoutMs, 45000);
+  assert.equal(submit.disabled, false);
+  assert.ok(!preview.innerHTML.includes('trusted_code'));
+  await options.onSubmit(form);
+  assert.equal(calls[1][0], '/plugins/upload');
+  assert.equal(calls[1][2].expected_revision, 0);
+  assert.equal(calls[1][2].trusted_code, undefined);
+  assert.equal(calls[1][3].timeoutMs, 720000);
+  options.onClose();
+});
 await test('plugin upload: native metadata keeps falsy defaults without requiring channel credentials', () => {
   const parsed = parsePlugin(pluginPackage());
   assert.deepEqual(parsed.config, { enabled: false, limit: 0 });
@@ -322,6 +362,38 @@ await test('plugin upload: installed plugins and built-in adapters have separate
 const parametersURL = dataURL((await source('parameters-editor.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)));
 const parameters = await import(parametersURL);
 const channel = await import(dataURL((await source('channel-editor.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)).replace("'./models-editor.js'", JSON.stringify(modelsURL)).replace("'./parameters-editor.js'", JSON.stringify(parametersURL)).replace("'./key-manager.js'", JSON.stringify(keyManagerURL))));
+await test('plugin declared request fields drive JSON preview forms without pretending to upload resource references', () => {
+  const fields = [{ key: 'vendorStyle', label: '风格', type: 'string', enum: ['ink', 'photo'] }, { key: 'seed', type: 'integer', default: 42 }, { key: 'image', type: 'resource' }];
+  const schema = channel.pluginRequestSchema({ manifest: { request_schema: fields } });
+  assert.deepEqual(schema, fields.slice(0, 2));
+  const html = ui.schemaFields(schema, {}, 'request');
+  assert.ok(html.includes('request-0') && html.includes('vendorStyle') && html.includes('42'));
+  assert.ok(!html.includes('request-2'));
+});
+await test('plugin update review includes dedicated parameter schema and non-JSON transport changes', () => {
+  const previous = { manifest: pluginPackage().manifest };
+  const next = { manifest: { ...previous.manifest, request_schema: [{ key: 'vendorStyle', type: 'string' }], capabilities: { ...previous.manifest.capabilities, request_formats: ['json', 'multipart', 'binary'] } } };
+  const changes = pluginManager.pluginChanges(previous, next);
+  assert.deepEqual(changes.requestFields, ['vendorStyle']);
+  assert.deepEqual(changes.formats, ['multipart', 'binary']);
+});
+await test('channel schemas prefill renamed plugin fields without changing the source configuration', () => {
+  const plugin = { config: { region: 'global' }, manifest: { config_aliases: { token: 'old_token' } } };
+  const saved = { old_token: '***', region: 'local' };
+  assert.deepEqual(channel.pluginConfigValues(plugin, saved), { old_token: '***', token: '***', region: 'local' });
+  assert.deepEqual(saved, { old_token: '***', region: 'local' });
+});
+await test('native plugin base URLs select an encoded channel and update previews expose native policy changes', () => {
+  const plugin = { manifest: { native_proxy: { client_auth: { type: 'query', name: 'key' }, routes: [{ path: '/generate' }] } } };
+  assert.equal(channel.nativeProxyURL(plugin, '测试 / A+', 'https://miora.example'), 'https://miora.example/native/%E6%B5%8B%E8%AF%95%20%2F%20A%2B');
+  assert.equal(channel.nativeProxyURL({ manifest: {} }, 'legacy'), '');
+  assert.equal(pluginManager.pluginChanges(null, plugin).nativeProxyChanged, true);
+  assert.equal(pluginManager.pluginChanges(plugin, plugin).nativeProxyChanged, false);
+});
+await test('OAuth file previews retain refresh-token credentials rather than importing only short-lived AT', () => {
+  assert.equal(channel.extractAccountFromJson(JSON.stringify({ tokens: { account_id: 'account', access_token: 'short-at', refresh_token: 'refresh' } }), 'codex').credential, 'account,refresh');
+  assert.equal(channel.extractAccountFromJson(JSON.stringify({ claudeAiOauth: { accessToken: 'short-at', refreshToken: 'refresh' } }), 'claude').credential, 'oauth:claude,refresh');
+});
 const logSettingsURL = dataURL((await source('log-settings.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)));
 const logSettings = await import(logSettingsURL);
 const requestLogs = await import(dataURL((await source('request-logs.js')).replace("'./icons.js'", JSON.stringify(iconsURL)).replace("'./ui.js'", JSON.stringify(uiURL)).replace("'./api.js'", JSON.stringify(apiURL)).replace("'./log-settings.js'", JSON.stringify(logSettingsURL))));
@@ -422,7 +494,7 @@ await test('channel editor close callback can access its OAuth timer outside onM
 await test('channel draft reuses validated models and parses parameter policy only once', async () => {
   const editorSource = await source('channel-editor.js');
   const draftSource = editorSource.slice(editorSource.indexOf('  function draftChannel('), editorSource.indexOf('  function dto('));
-  const elements = { extra: { value: '{}' }, protocol_mode: { value: 'auto' }, channel_groups: { value: 'default' }, allow_byok: { checked: false }, retry_empty: { checked: false }, reasoning_history: { value: 'preserve' }, reasoning_suffixes: { checked: false } };
+  const elements = { extra: { value: '{}' }, protocol_mode: { value: 'auto' }, channel_groups: { value: 'default' }, allow_byok: { checked: false }, retry_empty: { checked: false }, reasoning_history: { value: 'preserve' }, unsigned_thinking: { value: 'preserve' }, reasoning_suffixes: { checked: false } };
   let policyReads = 0, modelReads = 0, rejected = false;
   const tabs = [], policy = { defaults: { temperature: .5 } }, model = ['public'];
   const draft = runInNewContext(draftSource + '\ndraftChannel', {

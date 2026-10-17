@@ -391,19 +391,22 @@ pub(crate) fn matching_providers(
             }
         }
     }
+    let policy_endpoint = crate::plugins::native::mount(endpoint)
+        .map(|(_, path)| path.trim_end_matches('/'))
+        .unwrap_or(endpoint);
     matches.retain(|provider| {
         crate::control::channels::temporary_allowed(provider, api_key)
             && provider_accepts_endpoint(provider, endpoint)
             && !provider.excluded_endpoints.iter().any(|excluded| {
-                excluded
-                    .trim_end_matches('/')
-                    .eq_ignore_ascii_case(endpoint)
+                let excluded = excluded.trim_end_matches('/');
+                excluded.eq_ignore_ascii_case(endpoint)
+                    || excluded.eq_ignore_ascii_case(policy_endpoint)
             })
             && provider_accepts_body(provider, request_body_bytes)
             && provider_accepts_request_type(provider, request_type)
             && provider_accepts_request_rules(
                 provider,
-                endpoint,
+                policy_endpoint,
                 request_model,
                 reasoning_effort,
                 request_type,

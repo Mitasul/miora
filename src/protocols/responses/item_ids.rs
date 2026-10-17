@@ -1,10 +1,7 @@
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 
 const MAX_ITEM_ID_LENGTH: usize = 64;
-
-const HASHED_ITEM_ID_HEX_LENGTH: usize = 40;
 
 #[derive(Default)]
 pub(crate) struct ResponsesItemIdNormalizer {
@@ -176,9 +173,29 @@ fn normalized_id(original: &str, prefix: &str) -> Option<String> {
             return (candidate != original).then_some(candidate);
         }
     }
-    let digest = Sha256::digest(original.as_bytes());
-    let hex = format!("{digest:x}");
-    Some(format!("{prefix}_{}", &hex[..HASHED_ITEM_ID_HEX_LENGTH]))
+    let mut sanitized = String::with_capacity(original.len());
+    for byte in original.bytes() {
+        if byte.is_ascii_alphanumeric() {
+            sanitized.push(byte as char);
+        } else {
+            sanitized.push_str(&format!("{byte:02x}"));
+        }
+    }
+    if sanitized.is_empty() {
+        sanitized.push('0');
+    }
+    let max_suffix = MAX_ITEM_ID_LENGTH.saturating_sub(prefix.len() + 1);
+    if sanitized.len() > max_suffix {
+        let mut h1: u64 = 0xcbf29ce484222325;
+        let mut h2: u64 = 0x84222325cbf29ce4;
+        for byte in original.bytes() {
+            h1 = (h1 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+            h2 = (h2.wrapping_add(u64::from(byte))).wrapping_mul(0x100000001b3);
+        }
+        let keep = max_suffix.saturating_sub(32);
+        sanitized = format!("{}{h1:016x}{h2:016x}", &sanitized[..keep]);
+    }
+    Some(format!("{prefix}_{sanitized}"))
 }
 
 fn item_prefix(item_type: &str) -> Option<&'static str> {

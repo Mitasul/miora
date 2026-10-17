@@ -13,6 +13,7 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     publisher.start_watcher();
     let persistence = crate::storage::database::Persistence::initialize(database_disabled).await?;
     let state = AppState::new(String::new(), String::new(), false, persistence, publisher)?;
+    state.plugins.restore_managed().await;
     let _ = state.runtime.refresh().await;
     state.runtime.start_watcher();
 

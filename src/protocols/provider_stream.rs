@@ -2957,6 +2957,27 @@ mod tests {
     }
 
     #[test]
+    fn migration_compat_terminal_usage_reaches_stream_outcome_and_failed_completion_stays_failed() {
+        let mut state = StreamState::new_with_options("public", OutputProtocol::Chat, true);
+        let event = json!({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":120,"output_tokens":30,"input_tokens_details":{"cached_tokens":80,"cache_write_tokens":10},"output_tokens_details":{"reasoning_tokens":15}}}});
+        let chunks = state.responses(&event);
+        assert!(state.terminal);
+        let outcome = state.outcome();
+        assert!(outcome.success);
+        assert_eq!(outcome.fact_usage.input, Some(120));
+        assert_eq!(outcome.fact_usage.output, Some(30));
+        assert_eq!(outcome.fact_usage.cache_read, Some(80));
+        assert_eq!(outcome.fact_usage.cache_write, Some(10));
+        assert_eq!(
+            chunks.last().unwrap()["usage"]["prompt_tokens_details"]["cached_tokens"],
+            80
+        );
+        let mut failed = StreamState::new_with_options("public", OutputProtocol::Chat, false);
+        failed.responses(&json!({"type":"response.completed","response":{"status":"failed","error":{"message":"upstream failed"}}}));
+        assert!(!failed.outcome().success);
+    }
+
+    #[test]
     fn responses_stream_preserves_reported_usage_without_client_opt_in() {
         let mut state = StreamState::new_with_options("public-model", OutputProtocol::Chat, false);
         let chunks = state.responses(&json!({

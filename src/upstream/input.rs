@@ -450,24 +450,43 @@ pub(crate) async fn prepare_input(
             content_type,
         });
     }
+    let mut routing_fields =
+        if normalized_content_type.starts_with("application/x-www-form-urlencoded") {
+            spool
+                .storage
+                .urlencoded_routing_fields()
+                .await
+                .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error))?
+        } else if normalized_content_type.starts_with("multipart/form-data") {
+            serde_json::to_value(
+                spool
+                    .storage
+                    .multipart_text_fields(&content_type, &["model", "stream"], 4096)
+                    .await
+                    .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error))?,
+            )
+            .unwrap()
+        } else {
+            json!({})
+        };
     let model = match query_value(uri, "model") {
         Some(model) => model,
-        None if normalized_content_type.starts_with("multipart/form-data") => spool
-            .storage
-            .multipart_text_field(&content_type, "model", 4096)
-            .await
-            .map_err(|error| json_error(StatusCode::BAD_REQUEST, &error))?
-            .unwrap_or_else(|| {
-                if path == "/v1/images/edits" {
-                    "gpt-image-2".into()
-                } else {
-                    String::new()
-                }
-            }),
-        None => String::new(),
+        None => routing_fields
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or(if path == "/v1/images/edits" {
+                "gpt-image-2"
+            } else {
+                ""
+            })
+            .to_owned(),
     };
+    routing_fields["model"] = Value::String(model);
+    if let Some(stream) = routing_fields.get("stream").and_then(Value::as_str) {
+        routing_fields["stream"] = Value::Bool(stream == "true" || stream == "1");
+    }
     Ok(PreparedInput {
-        payload: Some(json!({"model": model})),
+        payload: Some(routing_fields),
         replay: Some((spool.storage, spool.observation.clone())),
         observation: spool.observation,
         default_model: String::new(),

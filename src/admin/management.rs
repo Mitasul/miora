@@ -369,6 +369,7 @@ struct ModelDiscovery {
 
 #[derive(Default, Deserialize)]
 struct DiscoveryChannel {
+    provider: Option<String>,
     engine: Option<String>,
     base_url: Option<String>,
     api: Option<Value>,
@@ -451,9 +452,20 @@ async fn channel_models(state: &AppState, request: Request) -> ApiResult {
                 config.insert(version.manifest.auth.config_key.clone(), json!(key));
             }
         }
-        let result = state.plugins.models(id, config).await.map_err(|message| {
-            error(StatusCode::BAD_GATEWAY, "model_discovery_failed", &message)
-        })?;
+        let result = state
+            .plugins
+            .models(
+                id,
+                channel
+                    .get("provider")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+                config,
+            )
+            .await
+            .map_err(|message| {
+                error(StatusCode::BAD_GATEWAY, "model_discovery_failed", &message)
+            })?;
         return Ok(json!({"models":result["models"],"source":"plugin"}));
     }
     if engine == "codex" {
@@ -475,11 +487,7 @@ async fn channel_models(state: &AppState, request: Request) -> ApiResult {
     if (matches!(engine.as_str(), "codex" | "claude" | "antigravity") && raw_key.contains(','))
         || raw_key.trim_start().starts_with('{')
     {
-        if let Ok(auth) = state
-            .codex_oauth
-            .resolve(&raw_key, proxy.as_deref())
-            .await
-        {
+        if let Ok(auth) = state.codex_oauth.resolve(&raw_key, proxy.as_deref()).await {
             channel["api"] = json!(auth.bearer);
         }
     }
@@ -503,6 +511,9 @@ async fn channel_models(state: &AppState, request: Request) -> ApiResult {
 
 fn discovery_channel(saved: Value, overrides: DiscoveryChannel) -> Value {
     let mut channel = saved.as_object().cloned().unwrap_or_default();
+    if let Some(name) = overrides.provider.filter(|name| !name.is_empty()) {
+        channel.insert("provider".into(), json!(name));
+    }
     // Source configs also allow plugin fields beneath preferences.
     for field in ["channel_plugin", "plugin_config"] {
         if !channel.contains_key(field) {
@@ -674,7 +685,7 @@ async fn system_settings_change(
 ) -> ApiResult {
     use crate::control::{
         global_settings,
-        settings::{digest, merge, ProviderSettings},
+        settings::{merge, ProviderSettings},
     };
     let invalid = || settings_error((StatusCode::BAD_REQUEST, String::new()));
     if input.changes.len() != 1 || input.operation_id.is_empty() || input.operation_id.len() > 128 {
@@ -703,10 +714,10 @@ async fn system_settings_change(
     })?;
     let (source_revision, config) = source_config(state).await?;
     let mut controls = state.runtime.channel_controls.write().await;
-    let hash = digest(&input.changes);
+    let fingerprint = serde_json::to_string(&input.changes).unwrap_or_default();
     if apply {
         if let Some((old, result)) = controls.settings_operations.get(&input.operation_id) {
-            return if old == &hash && result["persistence"] == "source_file" {
+            return if old == &fingerprint && result["persistence"] == "source_file" {
                 Ok(result.as_ref().clone())
             } else {
                 Err(settings_error((StatusCode::CONFLICT, String::new())))
@@ -769,7 +780,7 @@ async fn system_settings_change(
         result["revision"] = json!(format!("{revision}:{}", controls.revision(&base)));
         controls.settings_operations.insert(
             input.operation_id,
-            (hash, std::sync::Arc::new(result.clone())),
+            (fingerprint, std::sync::Arc::new(result.clone())),
         );
         if controls.settings_operations.len() > 256 {
             if let Some(key) = controls.settings_operations.keys().next().cloned() {
@@ -1121,7 +1132,7 @@ async fn key_change(state: &AppState, request: Request) -> ApiResult {
         match action {
             "add" => {
                 for item in group_name
-                    .split(|c| c == ',' || c == '，')
+                    .split([',', '，'])
                     .map(str::trim)
                     .filter(|s| !s.is_empty())
                 {
@@ -1156,7 +1167,9 @@ async fn key_change(state: &AppState, request: Request) -> ApiResult {
             )
         })?;
         let revision = source_revision(state).await?;
-        return Ok(json!({"ok":true,"revision":revision,"groups":list,"persistence":"source_file"}));
+        return Ok(
+            json!({"ok":true,"revision":revision,"groups":list,"persistence":"source_file"}),
+        );
     }
     if let Some(groups) = &input.groups {
         validate_groups(&json!(groups))?;

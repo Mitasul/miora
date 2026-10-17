@@ -1,23 +1,80 @@
-# Channel plugins (service protocol v1)
+# Channel plugins (protocol / SDK v1)
+
+Miora supports built-in Rust adapters, uploaded managed Python ZIP packages, and
+independent HTTP services. For upload-and-run installation, SDK extension points,
+OAuth, configuration aliases and process/version management, see the
+[Python SDK guide](../sdk/python/README.md). This page documents the retained
+independent-service contract; it does not require managed plugins to run a
+manually deployed service.
 
 Miora can execute an independently deployed channel service without adding a
 supplier-specific `engine` branch to the gateway. The service receives an
 explicit, versioned JSON envelope and returns the selected downstream protocol
-(JSON or SSE). Scheduling, API-key authorization, retries, hedging, timeouts,
+(JSON, SSE or binary). Non-JSON request transport is an explicit opt-in extension
+described below. Scheduling, API-key authorization, retries, hedging, timeouts,
 usage observation and request logs remain in the Rust gateway.
 
 This is not an interceptor masquerading as a provider. A **channel plugin** owns
 model discovery, upstream authentication and execution. **Header interceptors**
 are a separate, ordered extension registry with narrowly bounded permissions.
 
+## Multimodal opt-in
+
+`capabilities.request_formats` defaults to `["json"]`. Plugins may additionally
+declare `form`, `multipart` and `binary`; the image-edit and audio-transcription
+endpoints are supported without replacing their existing Rust implementations.
+`request_schema` uses the configuration-field shape to declare provider-owned
+parameters (including `resource` fields). Those parameters bypass generic JSON
+policy mutation; the plugin SDK validates and converts them. Only declared query
+parameters are included as `request.query_parameters`; body fields take precedence.
+
+## Native authentication proxy opt-in
+
+Declare `manifest.native_proxy` to mount provider-native HTTP routes under
+`/native/<percent-encoded-channel-name>/...`. The full declaration, authorization
+model sources and the managed `NativeProxy` SDK are documented in the
+[Python SDK guide](../sdk/python/README.md#供应商原生协议认证代理).
+This mode is also available to independently deployed services; it does not
+require conversion to an OpenAI request or response.
+
+The existing resource RPC carries `request.format: "native"`, the original
+`request.endpoint`, raw credential-stripped `request.query`, business
+`request.headers` as `[name, value]` pairs, and `request.body_resource` followed
+by the unchanged body bytes. `request.model` is an authorization sidecar, not
+an instruction to rewrite that resource. The channel configuration contains
+the scheduled upstream credential, never the caller credential. Services must
+inject that credential according to `authentication` and must not follow
+redirects with it. HTTP status, business response headers and binary/SSE bodies
+are relayed without generic protocol transformation or automatic retries.
+The gateway continues to apply existing key/model/group authorization, rate
+admission, channel credential selection, resource limits, logging and pinned
+plugin execution versions. It does not infer arbitrary provider business
+completion from HTTP 200 or supply WebSocket upgrade support.
+
+For non-JSON execution, the internal service request has Content-Type
+`application/vnd.miora.resource+octet-stream`, a Content-Length, and
+`x-miora-envelope-length`. Its body is exactly the UTF-8 JSON envelope followed
+by the original resource bytes. `request.format` identifies the client encoding;
+`request.body_resource` contains `resource_id`, `content_type`, and byte `size`.
+There is no filesystem path, URL granting host access, base64 copy or checksum.
+The existing service bearer authentication and version/revision envelope remain.
+Legacy JSON-only services retain the original JSON transport and envelope shape.
+
+Independent services opting into these formats must implement this transport or
+reuse `read_envelope` and the resource helpers in the Python SDK. The SDK exposes
+request-scoped files, streaming multipart encoding, binary/JSON responses and
+cooperative asynchronous-task polling. It does not provide persistent public
+file URLs or a durable job queue. See the [SDK guide](../sdk/python/README.md)
+for limits, lifecycle and examples.
+
 ## File installation in the admin UI
 
-The plugin manager accepts one native `.miora.json` file. Upload, review its
+For an independent service, the plugin manager accepts a native `.miora.json` file. Upload, review its
 name/ID/version, and install; updates use the same upload flow. There is no
 installation configuration form. Supplier URLs, API keys and plugin parameters
 belong to the channel editor. Built-in adapters are listed separately.
 
-The native file is a service descriptor, not executable source or a ZIP archive:
+The `.miora.json` file is a service descriptor; a managed executable package is uploaded separately as ZIP:
 
 ```json
 {
@@ -43,12 +100,15 @@ compatibility implementation of another project's protocol.
 
 `GET /admin/api/plugins/template` downloads an example. Authenticated
 `POST /admin/api/plugins/upload` accepts multipart `file` and optional `options`
-JSON containing only `expected_revision` (0 for new installs). Cookies and CSRF
-are required. Files are limited to 256 KiB and complete bodies to 512 KiB;
+JSON containing `expected_revision` (0 for new installs), `trusted_code` (managed
+packages only), and `allow_version_change` (explicit replacement/downgrade confirmation). Cookies and CSRF
+are required. Descriptors are limited to 256 KiB, ZIPs to 16 MiB and complete multipart bodies to 17 MiB;
 duplicate/unknown fields and unsupported formats fail before publication.
 Existing trust, health-handshake and revision-CAS checks remain authoritative.
 The existing JSON registration API is retained for automation. Uploading does not
-execute code, provision a service, or bypass the operator's service-origin policy.
+execute code or provision an independent service. Managed ZIP installation does
+run trusted code and dependencies, following its explicit confirmation; it does
+not inherit permission to use arbitrary independent-service origins.
 
 ## Quick start: entirely local, no paid upstream
 
@@ -117,17 +177,21 @@ The files in `examples/plugins/echo/` use only Python 3.10+ standard library.
    `model: echo-model`. Chat and Responses both support `stream: true` in this
    demo. SSE is sent progressively and the demo makes no upstream network call.
 
-To exercise an update without restarting either process:
+To exercise an independent-service update, keep the old service running and
+start a second version-specific endpoint, then register it:
 
 ```sh
-python examples/plugins/echo/register.py --version 2.0.0 --prefix Updated
+python examples/plugins/echo/server.py --port 8766 --token local-demo-service-token
+python examples/plugins/echo/register.py --endpoint http://127.0.0.1:8766 --version 2.0.0 --prefix Updated
 ```
 
 The demo is a configuration-versioned engine that accepts arbitrary manifest
 versions. A real multi-version service must retain the implementations selected
 by `plugin.version` and `plugin.revision`; do not deploy incompatible code behind
 the same endpoint and silently stop supporting versions with active leases.
-Prefer distinct immutable deployment URLs for incompatible code versions.
+Updates must use a distinct immutable execution endpoint. Reusing a retained
+endpoint for another registration is rejected; a descriptor alone cannot retain
+an implementation that the remote deployment has already overwritten.
 
 ## Manifest
 
@@ -332,7 +396,7 @@ Trust is rechecked on restoring every retained version. Tightening the allowlist
 so a retained endpoint becomes untrusted fails startup closed; migrate/archive
 the protected store deliberately instead of silently bypassing policy.
 
-The store is append-only `revision-00000000000000000001.json` generations, each a
+The store uses immutable `revision-00000000000000000001.json` generations, each a
 complete versioned snapshot. A create-new temporary file is flushed before
 rename to a previously nonexistent generation; only then is in-memory state
 published. A persistence error cannot swap the active version. This design works
@@ -342,13 +406,15 @@ latest data is not silently replaced with stale state.
 
 **The store contains plaintext channel/service secrets.** Unix revision files
 are created mode 0600; Windows deployments must set a restrictive directory ACL.
-Keep the directory out of public web roots/source control and protect backups.
+Keep the directory out of public web roots/source control.
 Use one gateway writer per directory: this is not a distributed registry or a
 cross-process transaction coordinator. Histories are bounded to 128 plugins,
 100 execution versions per plugin, 64 interceptors, and a 64 MiB snapshot.
 Reaching the version cap rejects new updates but never blocks disable/rollback.
-Old committed generations are retained for recovery and require operator-managed
-retention/backups; this first version does not implement garbage collection.
+After a new complete snapshot is published, prior committed generation files
+are removed. Normally only 3 execution versions are retained per plugin; live
+leases keep older versions until a subsequent update can collect them. This is
+execution-version retention, not an extra configuration/database backup scheme.
 
 Trusted service origins are an operator trust boundary, not an Internet sandbox.
 An allowed HTTPS hostname must be controlled by your deployment; use network
@@ -419,11 +485,12 @@ through `channel_plugin`. Legacy unknown engine aliases retain the historical
 OpenAI-compatible built-in fallback. Remaining provider-specific response/OAuth
 logic is a compatibility layer, not the extension mechanism for new services.
 
-Service contract v1 handles JSON request bodies, not multipart uploads or raw
-binary request replay. Only declared allowlisted endpoints are accepted. It does
-not download/execute untrusted plugin packages, manage service processes,
-cryptographically attest remote service code, or provide per-model capability
-schemas. Those are explicit future extensions, not simulated features.
+Legacy JSON-only services keep the JSON envelope. Multimodal services opt in to
+the resource transport; native authentication proxies separately declare their
+native routes and credential location. Only declared routes are accepted.
+Independent remote services remain operator-managed; the managed Python ZIP
+runtime supplies local process management instead. Neither mode attests remote
+code or provides an operating-system sandbox.
 
 ## Verification
 

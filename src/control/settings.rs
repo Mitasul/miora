@@ -8,7 +8,6 @@ use crate::runtime::state::GatewayRuntime;
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -83,10 +82,15 @@ pub(crate) fn digest<T: Serialize>(v: &T) -> String {
             _ => v,
         }
     }
-    hex::encode(Sha256::digest(
-        serde_json::to_vec(&normalize(serde_json::to_value(v).unwrap_or(Value::Null)))
-            .unwrap_or_default(),
-    ))
+    let bytes = serde_json::to_vec(&normalize(serde_json::to_value(v).unwrap_or(Value::Null)))
+        .unwrap_or_default();
+    let mut h1: u64 = 0xcbf29ce484222325;
+    let mut h2: u64 = 0x84222325cbf29ce4;
+    for byte in bytes {
+        h1 = (h1 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        h2 = (h2.wrapping_add(u64::from(byte))).wrapping_mul(0x100000001b3);
+    }
+    format!("{h1:016x}{h2:016x}")
 }
 
 fn pointer_parts(path: &str) -> Vec<String> {

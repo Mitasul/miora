@@ -12,6 +12,7 @@ export function formatAccountIdentity(key) {
 
 export function formatOAuthState(key) {
   const oauth = key.oauth || {};
+  if (oauth.error) return `<span class="text-danger">${esc(oauth.error)}</span>`;
   if (oauth.refreshable) {
     return oauth.expires_at
       ? `${badge('OAuth 账号', 'green')}<span class="subline">到期 ${esc(new Date(oauth.expires_at * 1000).toLocaleString())}</span>`

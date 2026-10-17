@@ -7,7 +7,11 @@ use axum::http::{Method, Request, Response, StatusCode};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) -> Response<Body> {
+pub(crate) async fn handle(
+    registry: &PluginRegistry,
+    request: Request<Body>,
+    providers: &[std::sync::Arc<crate::config::snapshot::Provider>],
+) -> Response<Body> {
     let path = request.uri().path().trim_end_matches('/').to_owned();
     let method = request.method().clone();
     if path == "/admin/api/plugins/template" && method == Method::GET {
@@ -18,12 +22,81 @@ pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) ->
         );
         return response;
     }
-    if path == "/admin/api/plugins/upload" && method == Method::POST {
-        let registration = match super::upload::read(request).await {
+    if path == "/admin/api/plugins/sdk" && method == Method::GET {
+        return Response::builder()
+            .header("content-type", "text/x-python; charset=utf-8")
+            .header(
+                "content-disposition",
+                "attachment; filename=miora_plugin.py",
+            )
+            .body(Body::from(include_str!("../../sdk/python/miora_plugin.py")))
+            .unwrap();
+    }
+    if let Some(id) = path
+        .strip_prefix("/admin/api/plugins/")
+        .and_then(|tail| tail.strip_suffix("/logs"))
+    {
+        if method == Method::GET {
+            return match registry.logs(id) {
+                Ok(value) => output(StatusCode::OK, value),
+                Err(message) => error(StatusCode::NOT_FOUND, "not_found", &message),
+            };
+        }
+    }
+    if matches!(
+        path.as_str(),
+        "/admin/api/plugins/upload" | "/admin/api/plugins/preview"
+    ) && method == Method::POST
+    {
+        let upload = match super::upload::read(request).await {
             Ok(registration) => registration,
             Err((status, message)) => return error(status, "invalid_plugin_file", &message),
         };
-        return match registry.register_checked(registration).await {
+        let preview = path.ends_with("/preview");
+        let result = match upload {
+            super::upload::Upload::Service(registration) => {
+                if preview {
+                    return output(
+                        StatusCode::OK,
+                        json!({"kind":"service","manifest":registration.manifest}),
+                    );
+                }
+                if let Err(message) = registry.validate_instances(
+                    &registration.manifest,
+                    Some(&registration.config),
+                    providers,
+                ) {
+                    return error(StatusCode::BAD_REQUEST, "incompatible_channel", &message);
+                }
+                registry.register_checked(registration).await
+            }
+            super::upload::Upload::Managed { bytes, expected } => {
+                let (staging, metadata) = match registry.stage_managed(&bytes, !preview).await {
+                    Ok(value) => value,
+                    Err(message) => {
+                        return error(StatusCode::BAD_REQUEST, "invalid_plugin_package", &message)
+                    }
+                };
+                if preview {
+                    return output(StatusCode::OK, metadata);
+                }
+                let manifest = match serde_json::from_value(metadata["manifest"].clone()) {
+                    Ok(manifest) => manifest,
+                    Err(cause) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_manifest",
+                            &cause.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = registry.validate_instances(&manifest, None, providers) {
+                    return error(StatusCode::BAD_REQUEST, "incompatible_channel", &message);
+                }
+                registry.install_managed(staging, metadata, expected).await
+            }
+        };
+        return match result {
             Ok(plugin) => output(StatusCode::OK, json!({"plugin":plugin})),
             Err(message) => error(
                 if message == "revision_conflict" {
@@ -41,7 +114,22 @@ pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) ->
         };
     }
     if method == Method::GET && path == "/admin/api/plugins" {
-        return output(StatusCode::OK, registry.list());
+        let mut value = registry.list();
+        for plugin in value["plugins"].as_array_mut().unwrap() {
+            let channels: Vec<_> = providers
+                .iter()
+                .filter(|provider| {
+                    if plugin["kind"] == "builtin" {
+                        plugin["manifest"]["engine"].as_str() == Some(provider.engine.as_ref())
+                    } else {
+                        super::runtime::channel_plugin_id(provider) == plugin["id"].as_str()
+                    }
+                })
+                .map(|provider| provider.name.as_ref())
+                .collect();
+            plugin["channels"] = json!(channels);
+        }
+        return output(StatusCode::OK, value);
     }
     if method == Method::GET && path == "/admin/api/interceptors" {
         return output(StatusCode::OK, registry.interceptors());
@@ -84,10 +172,17 @@ pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) ->
     };
     let result = if path == "/admin/api/plugins" && method == Method::POST {
         match serde_json::from_value::<Registration>(value) {
-            Ok(registration) => registry
-                .register_checked(registration)
-                .await
-                .map(|plugin| json!({"plugin":plugin})),
+            Ok(registration) => match registry.validate_instances(
+                &registration.manifest,
+                Some(&registration.config),
+                providers,
+            ) {
+                Ok(()) => registry
+                    .register_checked(registration)
+                    .await
+                    .map(|plugin| json!({"plugin":plugin})),
+                Err(message) => Err(message),
+            },
             Err(_) => Err("invalid plugin registration fields".into()),
         }
     } else if path == "/admin/api/interceptors" && method == Method::PUT {
@@ -129,6 +224,12 @@ pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) ->
                     value.get("expected_revision").and_then(Value::as_u64),
                     value.get("revision").and_then(Value::as_u64),
                 ) {
+                    match registry.validate_rollback_instances(id, revision, providers) {
+                        Ok(()) => {}
+                        Err(message) => {
+                            return error(StatusCode::BAD_REQUEST, "incompatible_channel", &message)
+                        }
+                    }
                     registry
                         .change_checked(id, expected, None, Some(revision))
                         .await
@@ -136,6 +237,37 @@ pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) ->
                 } else {
                     Err("expected_revision and revision are required".into())
                 }
+            }
+            "oauth" => {
+                let channel = value
+                    .get("channel")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                let mut config = providers
+                    .iter()
+                    .find(|provider| {
+                        provider.name.as_ref() == channel
+                            && super::runtime::channel_plugin_id(provider) == Some(id)
+                    })
+                    .and_then(|provider| provider.preferences.get("plugin_config"))
+                    .and_then(Value::as_object)
+                    .cloned()
+                    .unwrap_or_default();
+                if let Some(overrides) = value.get("config").and_then(Value::as_object) {
+                    for (key, value) in overrides {
+                        if value != "***" {
+                            config.insert(key.clone(), value.clone());
+                        }
+                    }
+                }
+                registry
+                    .oauth(
+                        id,
+                        channel,
+                        config,
+                        value.get("oauth").cloned().unwrap_or(Value::Null),
+                    )
+                    .await
             }
             "models" => {
                 let config = match value.get("config") {
@@ -149,7 +281,16 @@ pub(crate) async fn handle(registry: &PluginRegistry, request: Request<Body>) ->
                         )
                     }
                 };
-                registry.models(id, config).await
+                registry
+                    .models(
+                        id,
+                        value
+                            .get("channel")
+                            .and_then(Value::as_str)
+                            .unwrap_or_default(),
+                        config,
+                    )
+                    .await
             }
             _ => {
                 return error(

@@ -138,7 +138,12 @@ async fn handle_inner(state: &AppState, request: Request) -> Response<Body> {
         || path == "/admin/api/interceptors"
         || path.starts_with("/admin/api/interceptors/")
     {
-        crate::plugins::api::handle(state.plugins.as_ref(), request).await
+        let snapshot = state.runtime.snapshot().await;
+        let providers = snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.providers.as_slice())
+            .unwrap_or_default();
+        crate::plugins::api::handle(state.plugins.as_ref(), request, providers).await
     } else {
         management::handle(state, request, &path).await
     };
@@ -306,9 +311,13 @@ fn mutation_body_limit(
     method: &Method,
     headers: &HeaderMap,
 ) -> Result<usize, Response<Body>> {
-    if path == "/admin/api/plugins/upload" && method == Method::POST {
+    if matches!(
+        path,
+        "/admin/api/plugins/upload" | "/admin/api/plugins/preview"
+    ) && method == Method::POST
+    {
         return if content_type_is(headers, "multipart/form-data") {
-            Ok(524_288)
+            Ok(17 * 1024 * 1024)
         } else {
             Err(error(
                 StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -364,7 +373,7 @@ pub(super) fn error(status: StatusCode, code: &str, message: &str) -> Response<B
 mod tests {
     use super::*;
     #[test]
-    fn multipart_is_limited_to_the_exact_post_upload_route() {
+    fn multipart_is_limited_to_the_exact_post_upload_and_preview_routes() {
         let mut headers = HeaderMap::new();
         headers.insert(
             "content-type",
@@ -372,7 +381,11 @@ mod tests {
         );
         assert_eq!(
             mutation_body_limit("/admin/api/plugins/upload", &Method::POST, &headers).unwrap(),
-            524_288
+            17 * 1024 * 1024
+        );
+        assert_eq!(
+            mutation_body_limit("/admin/api/plugins/preview", &Method::POST, &headers).unwrap(),
+            17 * 1024 * 1024
         );
         for path in [
             "/admin/api/plugins",

@@ -1395,6 +1395,29 @@ async fn send_attempt_inner(
     }
     request = match prepared.body {
         AttemptBody::Json(body) => request.body(body),
+        AttemptBody::PluginResource {
+            envelope,
+            storage,
+            observation,
+        } => {
+            let body = storage
+                .into_body(&observation)
+                .await
+                .map_err(|error| AttemptFailure {
+                    failure_reason: "other".into(),
+                    status: error.status,
+                    detail: error.message,
+                    upstream_url: prepared.url.clone(),
+                    response: None,
+                })?;
+            let prefix = futures_util::stream::once(async move {
+                Ok::<Bytes, axum::Error>(Bytes::from(envelope))
+            });
+            request.body(reqwest::Body::wrap_stream(futures_util::StreamExt::chain(
+                prefix,
+                body.into_data_stream(),
+            )))
+        }
         AttemptBody::Replay(storage, observation) => {
             let body = storage
                 .into_body(&observation)
@@ -1499,6 +1522,18 @@ async fn send_attempt_inner(
     }
     let status = response.status();
     let attribution_headers = response.headers().clone();
+    if prepared.downstream_protocol == DownstreamProtocol::NativeProxy {
+        let (response, outcome) =
+            crate::plugins::native::relay(response, positive_duration(timeouts.idle));
+        return Ok(AttemptSuccess {
+            response,
+            status,
+            usage: (0, 0, 0),
+            fact_usage: Default::default(),
+            stream_outcome: Some(outcome),
+            upstream_url: prepared.url,
+        });
+    }
     if !status.is_success() {
         let headers = filtered_response_headers(response.headers());
         let body = read_limited_upstream_body_with_idle(
@@ -1913,14 +1948,13 @@ async fn send_attempt_inner(
     if matches!(
         prepared.downstream_protocol,
         DownstreamProtocol::MessagesCompat | DownstreamProtocol::GeminiCompat
-    ) {
-        if prepared.downstream_stream {
-            output = crate::protocols::dialects::translate_body(
-                output,
-                prepared.downstream_protocol,
-                prepared.request_model.clone(),
-            );
-        }
+    ) && prepared.downstream_stream
+    {
+        output = crate::protocols::dialects::translate_body(
+            output,
+            prepared.downstream_protocol,
+            prepared.request_model.clone(),
+        );
     }
     copy_oaix_headers(&attribution_headers, output.headers_mut());
     output

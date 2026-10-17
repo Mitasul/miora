@@ -301,26 +301,75 @@ impl StoredBody {
         self.clone()
     }
 
+    pub async fn urlencoded_routing_fields(&self) -> Result<serde_json::Value, String> {
+        self.urlencoded_text_fields(&["model", "stream"]).await
+    }
+
+    pub async fn urlencoded_text_fields(
+        &self,
+        names: &[&str],
+    ) -> Result<serde_json::Value, String> {
+        let file = File::open(&self.path)
+            .await
+            .map_err(|error| format!("open form spool: {error}"))?;
+        let mut content = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(
+            &mut tokio::io::AsyncReadExt::take(file, 1024 * 1024 + 1),
+            &mut content,
+        )
+        .await
+        .map_err(|error| format!("read form spool: {error}"))?;
+        if content.len() > 1024 * 1024 {
+            return Err("URL encoded form exceeds 1 MiB".into());
+        }
+        let mut fields = serde_json::Map::new();
+        for (name, value) in url::form_urlencoded::parse(&content) {
+            if names.contains(&name.as_ref()) {
+                fields
+                    .entry(name.into_owned())
+                    .or_insert_with(|| serde_json::Value::String(value.into_owned()));
+            }
+        }
+        Ok(serde_json::Value::Object(fields))
+    }
+
     pub async fn multipart_text_field(
         &self,
         content_type: &str,
         field_name: &str,
         max_value_bytes: usize,
     ) -> Result<Option<String>, String> {
+        Ok(self
+            .multipart_text_fields(content_type, &[field_name], max_value_bytes)
+            .await?
+            .remove(field_name))
+    }
+
+    pub async fn multipart_text_fields(
+        &self,
+        content_type: &str,
+        field_names: &[&str],
+        max_value_bytes: usize,
+    ) -> Result<std::collections::BTreeMap<String, String>, String> {
         let boundary = multer::parse_boundary(content_type)
             .map_err(|error| format!("multipart request is missing a valid boundary: {error}"))?;
         let file = File::open(&self.path)
             .await
             .map_err(|error| format!("open multipart request spool: {error}"))?;
         let mut multipart = multer::Multipart::new(ReaderStream::new(file), boundary);
+        let mut values = std::collections::BTreeMap::new();
         while let Some(mut field) = multipart
             .next_field()
             .await
             .map_err(|error| format!("parse multipart request: {error}"))?
         {
-            if field.name() != Some(field_name) {
+            let Some(field_name) = field
+                .name()
+                .filter(|name| field_names.contains(name))
+                .map(str::to_owned)
+            else {
                 continue;
-            }
+            };
             let mut value = Vec::new();
             while let Some(chunk) = field
                 .chunk()
@@ -334,11 +383,16 @@ impl StoredBody {
                 }
                 value.extend_from_slice(&chunk);
             }
-            return std::str::from_utf8(&value)
-                .map(|value| Some(value.trim().to_owned()))
-                .map_err(|error| format!("multipart field {field_name} is not UTF-8: {error}"));
+            let value = std::str::from_utf8(&value)
+                .map_err(|error| format!("multipart field {field_name} is not UTF-8: {error}"))?;
+            values
+                .entry(field_name)
+                .or_insert_with(|| value.trim().to_owned());
+            if values.len() == field_names.len() {
+                break;
+            }
         }
-        Ok(None)
+        Ok(values)
     }
 
     pub async fn multipart_file(

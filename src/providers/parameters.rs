@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 
 mod policy;
 pub(crate) use policy::{
-    apply_body, apply_headers, apply_native_headers, capture_origin, validate_policy,
+    apply_body, apply_headers, apply_native_headers, capture_origin, exclude_plugin_fields,
+    validate_policy,
 };
 #[cfg(test)]
 mod tests;
@@ -307,6 +308,7 @@ pub(crate) fn prepare_preview(
             stream,
             "preview",
             "preview-attempt",
+            &body,
         )?;
         apply_native_headers(provider, endpoint, &mut headers, &mut report)?;
         registry.native_headers(&engine, &mut headers)?;

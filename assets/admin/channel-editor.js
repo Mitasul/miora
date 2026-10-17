@@ -6,10 +6,23 @@ import { createModelsEditor, rowsToModels } from './models-editor.js';
 import { createParametersEditor } from './parameters-editor.js';
 
 const array = value => Array.isArray(value) ? value : [];
+export function pluginRequestSchema(plugin) {
+  return array(plugin?.manifest?.request_schema).filter(field => field.type !== 'resource');
+}
+export function nativeProxyURL(plugin, channel, origin = '') {
+  return plugin?.manifest?.native_proxy ? `${origin}/native/${encodeURIComponent(channel)}` : '';
+}
 export function canPreview(capabilities, endpoint) {
   return capabilities?.body_supported === true && capabilities.preview_supported !== false && array(capabilities.endpoints).includes(endpoint);
 }
 export function shouldSendBaseURL(existing, value, savedURL) { return Boolean(value) && (!existing || value !== savedURL); }
+export function pluginConfigValues(plugin, saved = {}) {
+  const values = { ...(plugin?.config || {}), ...saved };
+  for (const [key, source] of Object.entries(plugin?.manifest?.config_aliases || {})) {
+    if (!Object.hasOwn(values, key) && Object.hasOwn(values, source)) values[key] = values[source];
+  }
+  return values;
+}
 const endpointLabel = endpoint => ({ '/v1/chat/completions': 'Chat Completions', '/v1/responses': 'Responses', '/v1/messages': 'Messages' })[endpoint] || endpoint;
 const sampleBody = endpoint => endpoint.endsWith('/responses') ? { input: '你好，请简短介绍你自己。' } : { messages: [{ role: 'user', content: '你好，请简短介绍你自己。' }] };
 
@@ -37,6 +50,9 @@ export function extractAccountFromJson(text, engine = 'codex') {
   if (engine === 'codex' && tokens.refresh_token) {
     return { credential: `${accountId},${tokens.refresh_token}`, email, plan, accountId };
   }
+  if (['claude', 'antigravity'].includes(engine) && (oauth.refresh_token || oauth.refreshToken)) {
+    return { credential: `oauth:${engine},${oauth.refresh_token || oauth.refreshToken}`, email, plan, accountId };
+  }
   const token = oauth.accessToken || oauth.access_token || entry.api_key || tokens.refresh_token || '';
   if (!token) throw new Error('未在文件中找到有效的 Token 或凭据');
   return { credential: token, email, plan, accountId };
@@ -60,10 +76,10 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
   const savedPluginConfig = config.plugin_config || config.preferences?.plugin_config || {};
   const savedEngine = config.engine || existing?.engine || '';
   const savedURL = config.base_url || existing?.base_url || '';
-  const types = plugins.filter(plugin => ['builtin', 'service'].includes(plugin.kind)).map(plugin => ({
-    value: plugin.kind === 'service' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`,
-    label: `${plugin.manifest?.name || plugin.id}${plugin.kind === 'service' && !plugin.enabled ? '（已停用）' : ''}`,
-    kind: plugin.kind, plugin,
+  const types = plugins.filter(plugin => ['builtin', 'service', 'managed'].includes(plugin.kind)).map(plugin => ({
+    value: plugin.kind !== 'builtin' ? `service:${plugin.id}` : `builtin:${plugin.manifest?.engine || plugin.id.replace(/^builtin-/, '')}`,
+    label: `${plugin.manifest?.name || plugin.id}${plugin.kind !== 'builtin' && !plugin.enabled ? '（已停用）' : ''}`,
+    kind: plugin.kind === 'builtin' ? 'builtin' : 'service', plugin,
   }));
   let selected = existing ? savedPlugin ? `service:${savedPlugin}` : `builtin:${savedEngine}` : (initialType && types.some(type => type.value === initialType) ? initialType : types.find(type => type.value === 'builtin:codex')?.value || types.find(type => type.value === 'builtin:gpt')?.value || types[0]?.value || '');
   if (existing && !types.some(type => type.value === selected)) types.unshift({ value: selected, label: `${savedPlugin || savedEngine || '自动识别'}（已配置类型）`, kind: savedPlugin ? 'service' : 'builtin', plugin: null });
@@ -108,6 +124,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
     channel.preferences.allow_byok = form.elements.allow_byok.checked;
     channel.preferences.response_policy = { ...(config.preferences?.response_policy || {}), retry_empty: form.elements.retry_empty.checked };
     channel.preferences.reasoning_history = form.elements.reasoning_history.value;
+    channel.preferences.unsigned_thinking = form.elements.unsigned_thinking.value;
     channel.preferences.reasoning_suffixes = form.elements.reasoning_suffixes.checked ? config.preferences?.reasoning_suffixes && Object.keys(config.preferences.reasoning_suffixes).length ? config.preferences.reasoning_suffixes : { '-high': { effort: 'high', budget_tokens: 2048 }, '-thinking': { effort: 'high', budget_tokens: 2048 } } : {};
     if (!forCapabilities) {
       let policy;
@@ -124,7 +141,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
     }
     return channel;
   }
-  function dto(channel, request) { return { ...(existing ? { provider: existing.provider } : {}), channel, ...(request ? { request } : {}) }; }
+  function dto(channel, request) { return { ...(existing ? { provider: existing.provider } : {}), channel: { ...channel, provider: existing?.provider || form.elements.provider.value.trim() }, ...(request ? { request } : {}) }; }
   function markStale() {
     if (!form || closed) return;
     if (previewExists) form.querySelector('.channel-preview-stale').textContent = '草稿已变更。下方仍是上一次构造结果，请重新预览。';
@@ -183,6 +200,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       const model = form.elements.preview_model.value;
       if (!model) throw new Error('请先在模型页添加一个模型，再选择要预览的公开模型。');
       const body = parseJSON(form.elements.preview_body.value, '示例请求体');
+      if (getType()?.kind === 'service') Object.assign(body, readSchema(form, pluginRequestSchema(getType().plugin), {}, 'request'));
       const result = await api.request('/channels/preview', { method: 'POST', body: dto(draftChannel(), { endpoint: form.elements.preview_endpoint.value, model, stream: form.elements.preview_stream.checked, body }), signal: previewController.signal });
       if (closed || sequence !== previewSequence) return;
       renderPreview(result);
@@ -194,12 +212,13 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
 
   form = dialog({ title: existing ? `编辑渠道 · ${existing.provider}` : '添加渠道', size: 'channel', submitLabel: existing ? '保存渠道' : '创建渠道',
     body: `<div class="channel-tabs" role="tablist" aria-label="渠道编辑页面">${[['basic', '基础与账号', 'channels'], ['models', '模型与映射', 'box'], ['parameters', '高级参数', 'filter']].map(([key, label, name], index) => `<button type="button" role="tab" id="channel-tab-${key}" data-channel-tab="${key}" aria-controls="channel-panel-${key}" aria-selected="${index === 0}" tabindex="${index === 0 ? 0 : -1}">${icon(name)}${label}</button>`).join('')}</div>` +
-      `<section data-channel-panel="basic" id="channel-panel-basic" role="tabpanel" aria-labelledby="channel-tab-basic">${pluginsResult.status === 'rejected' ? notice(`无法读取渠道类型：${pluginsResult.reason.message}`, 'warning') : ''}<div class="channel-basic-grid"><div>${field('provider', '渠道名称', existing?.provider || '', { required: true, readonly: Boolean(existing), placeholder: '例如：codex-main' })}${select('channel_type', '渠道类型', options.length ? options : [{ value: '', label: '暂无可用类型' }], selected)}</div><div id="channel-builtin-fields"><div id="channel-oauth-helper" class="field" hidden><span class="field-label">认证方式</span><div class="segmented-tabs" role="tablist" aria-label="账号认证方式" data-auth-mode-tabs><button type="button" class="button small primary" data-auth-mode="oauth" aria-pressed="true">${icon('key')}OAuth 登录</button><button type="button" class="button small" data-auth-mode="file" aria-pressed="false">${icon('upload')}导入文件</button><button type="button" class="button small" data-auth-mode="apikey" aria-pressed="false">${icon('edit')}手动填写</button></div><div data-auth-pane="oauth"><div class="inline-row"><button type="button" class="button primary" data-channel-oauth-start>${icon('key')}打开浏览器 OAuth 授权</button></div><div data-channel-oauth-flow hidden><label class="field"><span>授权链接</span><div class="inline-row"><input type="url" data-channel-oauth-url readonly><button type="button" class="button small" data-channel-oauth-copy>${icon('copy')}复制</button></div></label><label class="field"><span data-channel-oauth-step2-label>回调地址或授权码</span><div class="inline-row"><input type="text" data-channel-oauth-callback placeholder="粘贴回调 URL 或授权码 (code#state)" autocomplete="off" spellcheck="false"><button type="button" class="button primary" data-channel-oauth-exchange>${icon('check')}验证登录</button></div></label></div></div><div data-auth-pane="file" hidden><div class="inline-row"><label class="button primary" for="channel-auth-file-input">${icon('upload')}选择 auth.json 或凭据文件</label><input id="channel-auth-file-input" class="file-picker" type="file" data-channel-auth-file accept=".json,application/json"></div></div><div class="notice success" data-channel-account-card hidden></div><p class="hint" data-channel-auth-status></p></div><div id="channel-manual-cred-fields">${field('base_url', '接口地址 (Base URL)', initialURL, { type: 'url', placeholder: 'https://api.example.com/v1' })}${field('api', 'Token / API Key', '', { type: 'password', placeholder: existing ? '留空保留原凭据' : '粘贴 Token 或 API Key' })}</div></div></div><div class="field"><label class="field-label" for="f-channel_groups_input">分组</label><input id="f-channel_groups" name="channel_groups" type="hidden" value="${esc(initialGroups.join(', '))}"><div class="group-picker"><div class="group-chip-list" data-channel-group-chips></div><input id="f-channel_groups_input" type="text" class="group-inline-input" data-channel-new-group placeholder="+ 输入新分组按回车" aria-label="输入新分组名"></div></div>${select('protocol_mode', '协议处理', [{ value: 'auto', label: '兼容适配' }, { value: 'native', label: '原生透传' }], config.preferences?.protocol_mode || 'auto')}<p id="protocol-mode-hint" class="hint" hidden></p><details class="advanced"><summary>路由与思考策略</summary>${checkbox('allow_byok', '允许调用方自带上游 Key', config.preferences?.allow_byok === true)}${checkbox('retry_empty', '空响应自动切换渠道', config.preferences?.response_policy?.retry_empty === true)}${select('reasoning_history', '多轮思考历史', [{ value: 'preserve', label: '保留思考块' }, { value: 'strip', label: '剥离历史思考块' }], config.preferences?.reasoning_history || 'preserve')}${checkbox('reasoning_suffixes', '提供 -high / -thinking 模型别名', Object.keys(config.preferences?.reasoning_suffixes || {}).length > 0)}</details><div id="channel-schema"></div><p id="channel-type-hint" class="hint" role="status" hidden></p><details class="advanced"><summary>附加配置 JSON</summary>${field('extra', '附加配置 JSON', '{}', { type: 'textarea' })}</details></section>` +
+      `<section data-channel-panel="basic" id="channel-panel-basic" role="tabpanel" aria-labelledby="channel-tab-basic">${pluginsResult.status === 'rejected' ? notice(`无法读取渠道类型：${pluginsResult.reason.message}`, 'warning') : ''}<div class="channel-basic-grid"><div>${field('provider', '渠道名称', existing?.provider || '', { required: true, readonly: Boolean(existing), placeholder: '例如：codex-main' })}${select('channel_type', '渠道类型', options.length ? options : [{ value: '', label: '暂无可用类型' }], selected)}</div><div id="channel-builtin-fields"><div id="channel-oauth-helper" class="field" hidden><span class="field-label">认证方式</span><div class="segmented-tabs" role="tablist" aria-label="账号认证方式" data-auth-mode-tabs><button type="button" class="button small primary" data-auth-mode="oauth" aria-pressed="true">${icon('key')}OAuth 登录</button><button type="button" class="button small" data-auth-mode="file" aria-pressed="false">${icon('upload')}导入文件</button><button type="button" class="button small" data-auth-mode="apikey" aria-pressed="false">${icon('edit')}手动填写</button></div><div data-auth-pane="oauth"><div class="inline-row"><button type="button" class="button primary" data-channel-oauth-start>${icon('key')}打开浏览器 OAuth 授权</button></div><div data-channel-oauth-flow hidden><label class="field"><span>授权链接</span><div class="inline-row"><input type="url" data-channel-oauth-url readonly><button type="button" class="button small" data-channel-oauth-copy>${icon('copy')}复制</button></div></label><label class="field"><span data-channel-oauth-step2-label>回调地址或授权码</span><div class="inline-row"><input type="text" data-channel-oauth-callback placeholder="粘贴回调 URL 或授权码 (code#state)" autocomplete="off" spellcheck="false"><button type="button" class="button primary" data-channel-oauth-exchange>${icon('check')}验证登录</button></div></label></div></div><div data-auth-pane="file" hidden><div class="inline-row"><label class="button primary" for="channel-auth-file-input">${icon('upload')}选择 auth.json 或凭据文件</label><input id="channel-auth-file-input" class="file-picker" type="file" data-channel-auth-file accept=".json,application/json"></div></div><div class="notice success" data-channel-account-card hidden></div><p class="hint" data-channel-auth-status></p></div><div id="channel-manual-cred-fields">${field('base_url', '接口地址 (Base URL)', initialURL, { type: 'url', placeholder: 'https://api.example.com/v1' })}${field('api', 'Token / API Key', '', { type: 'password', placeholder: existing ? '留空保留原凭据' : '粘贴 Token 或 API Key' })}</div></div></div><div class="field"><label class="field-label" for="f-channel_groups_input">分组</label><input id="f-channel_groups" name="channel_groups" type="hidden" value="${esc(initialGroups.join(', '))}"><div class="group-picker"><div class="group-chip-list" data-channel-group-chips></div><input id="f-channel_groups_input" type="text" class="group-inline-input" data-channel-new-group placeholder="+ 输入新分组按回车" aria-label="输入新分组名"></div></div>${select('protocol_mode', '协议处理', [{ value: 'auto', label: '兼容适配' }, { value: 'native', label: '原生透传' }], config.preferences?.protocol_mode || 'auto')}<p id="protocol-mode-hint" class="hint" hidden></p><details class="advanced"><summary>路由与思考策略</summary>${checkbox('allow_byok', '允许调用方自带上游 Key', config.preferences?.allow_byok === true)}${checkbox('retry_empty', '空响应自动切换渠道', config.preferences?.response_policy?.retry_empty === true)}${select('reasoning_history', '多轮思考历史', [{ value: 'preserve', label: '保留思考块' }, { value: 'strip', label: '剥离历史思考块' }], config.preferences?.reasoning_history || 'preserve')}${select('unsigned_thinking', 'Claude 历史无签名思考', [{ value: 'preserve', label: '保留原始内容' }, { value: 'strip', label: '仅移除缺少签名的 thinking 块' }], config.preferences?.unsigned_thinking || 'preserve')}${checkbox('reasoning_suffixes', '提供 -high / -thinking 模型别名', Object.keys(config.preferences?.reasoning_suffixes || {}).length > 0)}</details><div id="channel-schema"></div><p id="channel-type-hint" class="hint" role="status" hidden></p><details class="advanced"><summary>附加配置 JSON</summary>${field('extra', '附加配置 JSON', '{}', { type: 'textarea' })}</details></section>` +
       `<section data-channel-panel="models" id="channel-panel-models" role="tabpanel" aria-labelledby="channel-tab-models" hidden><div class="channel-models" id="channel-models"></div></section><section data-channel-panel="parameters" id="channel-panel-parameters" role="tabpanel" aria-labelledby="channel-tab-parameters" hidden><div id="channel-parameters"></div></section>` +
       `<section id="channel-preview" class="channel-preview"><div class="parameter-section-heading"><div><h3>请求预览</h3></div><button type="button" class="button" data-channel-action="refresh-schema">${icon('refresh')}刷新能力</button></div><div class="preview-request-controls">${select('preview_endpoint', '请求端点', initialEndpoints.length ? initialEndpoints.map(path => ({ value: path, label: `${endpointLabel(path)} · ${path}` })) : [{ value: '', label: '正在读取可用端点' }], initialEndpoint)}${select('preview_model', '公开模型 / 别名', [{ value: '', label: '请先在模型页添加模型' }])}</div>${checkbox('preview_stream', '流式请求预览')}<p class="channel-preview-capability hint" role="status"></p><details class="advanced"><summary>示例请求体</summary>${field('preview_body', '示例 Payload', JSON.stringify(sampleBody(initialEndpoint), null, 2), { type: 'textarea', rows: 5 })}</details><div class="preview-actions"><button type="button" class="button primary" data-channel-action="preview" disabled>${icon('eye')}构造预览</button><span class="channel-preview-stale hint" role="status"></span></div><div class="notice danger channel-preview-error" role="alert" hidden></div><div class="channel-preview-result" hidden></div></section>`,
     onMount: mounted => {
       form = mounted;
       form.noValidate = true;
+      form.querySelector('.preview-request-controls').insertAdjacentHTML('afterend', '<section id="plugin-request-fields" class="schema-fields" hidden></section>');
       form.insertBefore(form.querySelector('.channel-tabs'), form.querySelector('.dialog-body'));
       form.elements.channel_type.required = true; if (savedPlugin) form.elements.channel_type.disabled = true;
       const channelMark = document.createElement('span');
@@ -208,6 +227,10 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       const updateBrand = () => {
         const type = getType();
         channelMark.innerHTML = aiIcon(channelBrand({ provider: form.elements.provider.value, base_url: type?.kind === 'service' ? '' : form.elements.base_url.value, engine: type?.plugin?.manifest?.engine, channel_plugin: type?.plugin?.manifest?.name }), 'channels');
+        const hint = form.querySelector('#channel-type-hint');
+        const nativeURL = nativeProxyURL(type?.plugin, form.elements.provider.value, globalThis.location?.origin || '');
+        hint.hidden = !nativeURL;
+        hint.textContent = nativeURL ? `原生 Base URL：${nativeURL} · 使用 Miora 调用 Key，保留供应商原生参数与响应。` : '';
       };
       form.elements.base_url.addEventListener('change', updateBrand);
       form.elements.provider.addEventListener('change', updateBrand);
@@ -223,12 +246,18 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         const type = getType(), service = type?.kind === 'service', schemaRoot = form.querySelector('#channel-schema');
         if (schemaRoot.firstElementChild) schemaDrafts.set(previousType, schemaRoot.firstElementChild);
         schema = service ? type?.plugin?.manifest?.config_schema || [] : [];
+        const requestFields = form.querySelector('#plugin-request-fields');
+        requestFields.hidden = !service || !type?.plugin?.manifest?.request_schema?.length;
+        requestFields.innerHTML = service ? `<h3>插件请求参数</h3>${schemaFields(pluginRequestSchema(type.plugin), {}, 'request')}${type.plugin.manifest.request_schema?.some(field => field.type === 'resource') ? '<p class="hint">文件参数通过 multipart 上传；JSON 预览不上传文件。</p>' : ''}` : '';
         form.querySelector('#channel-builtin-fields').hidden = Boolean(service);
         form.elements.base_url.disabled = Boolean(service); form.elements.api.disabled = Boolean(service); form.elements.base_url.required = !service;
         schemaRoot.hidden = !service;
         if (service) {
           let fields = schemaDrafts.get(selected);
-          if (!fields) { fields = document.createElement('div'); fields.className = 'schema-fields'; fields.innerHTML = `<h3>插件连接配置</h3>${schemaFields(schema, { ...(type?.plugin?.config || {}), ...(selected === `service:${savedPlugin}` ? savedPluginConfig : {}) })}`; }
+          if (!fields) { fields = document.createElement('div'); fields.className = 'schema-fields'; fields.innerHTML = `<h3>插件连接配置</h3>${schemaFields(schema, pluginConfigValues(type?.plugin, selected === `service:${savedPlugin}` ? savedPluginConfig : {}))}`; }
+          if (type?.plugin?.manifest?.capabilities?.oauth && !fields.querySelector('[data-plugin-oauth]')) {
+            fields.insertAdjacentHTML('beforeend', '<section data-plugin-oauth><h3>插件 OAuth 账号</h3><div class="inline-row"><button class="button" type="button" data-plugin-oauth-action="authorize">获取授权链接</button><button class="button" type="button" data-plugin-oauth-action="refresh">刷新账号</button><button class="button" type="button" data-plugin-oauth-action="status">查看状态</button></div><label class="field"><span>授权链接（复制到浏览器）</span><input data-plugin-oauth-url readonly></label><label class="field"><span>授权码</span><input data-plugin-oauth-code autocomplete="off"></label><label class="field"><span>State</span><input data-plugin-oauth-state autocomplete="off"></label><button class="button primary" type="button" data-plugin-oauth-action="exchange">完成授权</button><p data-plugin-oauth-result role="status"></p></section>');
+          }
           schemaRoot.replaceChildren(fields);
         } else { schemaRoot.replaceChildren(); if (!urlEdited) form.elements.base_url.value = type?.plugin?.manifest?.default_base_url || ''; }
         const oauthHelper = form.querySelector('#channel-oauth-helper');
@@ -236,7 +265,6 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         if (oauthHelper) oauthHelper.hidden = !isOAuthChannel;
         syncAuthModeUI();
         const changed = previousType !== selected;
-        const hint = form.querySelector('#channel-type-hint'); hint.hidden = true;
         if (changed) {
           modelsEditor?.resetCandidates();
           const endpoints = array(type?.plugin?.manifest?.capabilities?.endpoints);
@@ -267,6 +295,22 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         syncAuthModeUI();
       });
       form.elements.channel_type.addEventListener('change', () => { updateType(); refreshCapabilities(); }); updateType();
+      form.querySelector('#channel-schema').addEventListener('click', async event => {
+        const button = event.target.closest('[data-plugin-oauth-action]');
+        if (!button) return;
+        const section = button.closest('[data-plugin-oauth]'), status = section.querySelector('[data-plugin-oauth-result]');
+        button.disabled = true;
+        try {
+          const channel = form.elements.provider.value.trim();
+          if (!channel) throw new Error('请先填写渠道名称，OAuth 凭据按渠道独立保存。');
+          const result = await api.post(`/plugins/${encodeURIComponent(getType().plugin.id)}/oauth`, { channel, config: readSchema(form, schema, savedPluginConfig), oauth: { action: button.dataset.pluginOauthAction, code: section.querySelector('[data-plugin-oauth-code]').value.trim(), state: section.querySelector('[data-plugin-oauth-state]').value.trim() } }, { timeoutMs: 80000 });
+          if (result.authorize_url) section.querySelector('[data-plugin-oauth-url]').value = result.authorize_url;
+          if (result.state) section.querySelector('[data-plugin-oauth-state]').value = result.state;
+          status.textContent = result.authorize_url ? '打开链接授权后，粘贴授权码完成绑定。' : result.connected ? `账号已连接${result.refreshable ? '，支持续期' : '，无 refresh token'}` : '账号尚未授权';
+          if (button.dataset.pluginOauthAction === 'exchange') section.querySelector('[data-plugin-oauth-code]').value = '';
+        } catch (error) { status.textContent = error.message; }
+        finally { button.disabled = false; }
+      });
       const statusEl = form.querySelector('[data-channel-auth-status]');
       const accountCard = form.querySelector('[data-channel-account-card]');
       const oauthFlow = form.querySelector('[data-channel-oauth-flow]');
@@ -356,8 +400,11 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         if (!file || !statusEl) return;
         try {
           const engine = selected.slice('builtin:'.length);
-          const parsed = extractAccountFromJson(await file.text(), engine);
-          applyLoggedAccount({ credential: parsed.credential, email: parsed.email, plan: parsed.plan, accountId: parsed.accountId });
+          if (file.size > 128 * 1024) throw new Error('凭据文件不能超过 128 KiB');
+          const text = await file.text();
+          const parsed = extractAccountFromJson(text, engine);
+          const result = await api.post('/channels/keys', { oauth_only: true, provider: engine, import: JSON.parse(text) });
+          applyLoggedAccount({ ...parsed, credential: result.credentials.join('\n') });
         } catch (err) {
           statusEl.textContent = `解析失败：${err.message}`;
         }
@@ -420,7 +467,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
           if (opts.temperature !== '' && opts.temperature !== undefined && Number.isFinite(Number(opts.temperature))) request.temperature = Number(opts.temperature);
           if (opts.topP !== '' && opts.topP !== undefined && Number.isFinite(Number(opts.topP))) request.top_p = Number(opts.topP);
           if (opts.reasoningEffort) request.reasoning_effort = opts.reasoningEffort;
-          return api.request('/test', { method: 'POST', timeoutMs: 65000, body: { direct: true, provider: existing?.provider || '', model: modelName, channel: draftChannel(), request } });
+          return api.request('/test', { method: 'POST', timeoutMs: 65000, body: { direct: true, provider: existing?.provider || '', model: modelName, channel: { ...draftChannel(), provider: existing?.provider || form.elements.provider.value.trim() }, request } });
         },
       });
       updatePreviewModels();

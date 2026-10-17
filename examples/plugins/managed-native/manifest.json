@@ -1,0 +1,26 @@
+{
+  "id": "example-native",
+  "name": "原生协议认证代理",
+  "version": "1.0.0",
+  "api_version": 1,
+  "sdk_version": 1,
+  "author": "Miora",
+  "description": "保留供应商原生 HTTP 请求和响应，由 Miora 代管上游凭据。",
+  "config_schema": [
+    {"key": "base_url", "label": "供应商原生地址", "type": "string", "required": true},
+    {"key": "api_key", "label": "供应商凭据", "type": "string", "required": true, "secret": true},
+    {"key": "timeout", "label": "请求超时（秒）", "type": "number", "default": 120}
+  ],
+  "auth": {"type": "bearer", "config_key": "api_key"},
+  "capabilities": {"endpoints": [], "streaming": true},
+  "native_proxy": {
+    "client_auth": {"type": "bearer"},
+    "routes": [
+      {"path": "/api/generate", "methods": ["POST"], "model": {"source": "body", "pointer": "/model"}},
+      {"path": "/api/models/{model}:generateContent", "methods": ["POST"], "model": {"source": "path"}},
+      {"path": "/api/jobs/*", "methods": ["GET", "DELETE"], "model": {"source": "fixed", "value": "native-files"}},
+      {"path": "/api/files", "methods": ["POST"], "model": {"source": "fixed", "value": "native-files"}}
+    ]
+  },
+  "models": [{"id": "native-text"}, {"id": "native-files"}]
+}

@@ -177,6 +177,7 @@ pub(crate) fn claude_content(content: &Value) -> Vec<Value> {
         .into_iter()
         .flatten()
         .filter_map(|item| match item.get("type").and_then(Value::as_str) {
+            Some("thinking" | "redacted_thinking") => Some(item.clone()),
             Some("text") => Some(json!({"type":"text","text":item.get("text").cloned().unwrap_or(Value::String(String::new()))})),
             Some("image_url") => item
                 .pointer("/image_url/url")
@@ -192,6 +193,36 @@ pub(crate) fn claude_content(content: &Value) -> Vec<Value> {
             _ => None,
         })
         .collect()
+}
+
+pub(crate) fn strip_unsigned_thinking(payload: &mut Value) {
+    let Some(messages) = payload.get_mut("messages").and_then(Value::as_array_mut) else {
+        return;
+    };
+    messages.retain_mut(|message| {
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            return true;
+        }
+        if let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) {
+            let previous_length = content.len();
+            content.retain(|block| {
+                block.get("type").and_then(Value::as_str) != Some("thinking")
+                    || block
+                        .get("signature")
+                        .and_then(Value::as_str)
+                        .is_some_and(|value| !value.trim().is_empty())
+            });
+            return previous_length == content.len()
+                || !content.iter().all(|block| {
+                    block.get("type").and_then(Value::as_str) == Some("text")
+                        && block
+                            .get("text")
+                            .and_then(Value::as_str)
+                            .is_some_and(|text| text.trim().is_empty())
+                });
+        }
+        true
+    });
 }
 
 pub(crate) fn claude_to_chat(value: &Value, model: &str) -> Value {

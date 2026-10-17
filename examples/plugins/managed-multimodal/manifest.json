@@ -1,0 +1,28 @@
+{
+  "id": "multimodal-example",
+  "name": "Multimodal HTTP Example",
+  "description": "四种请求体与图片、归档直通示例；供应商地址和能力需按实际接口配置。",
+  "author": "Miora",
+  "version": "1.0.0",
+  "api_version": 1,
+  "sdk_version": 1,
+  "config_schema": [
+    { "key": "base_url", "label": "供应商地址", "type": "string", "required": true },
+    { "key": "api_key", "label": "API Key", "type": "string", "required": true, "secret": true },
+    { "key": "timeout", "label": "HTTP 超时（秒）", "type": "integer", "default": 120 }
+  ],
+  "request_schema": [
+    { "key": "vendorStyle", "label": "供应商风格", "type": "string" },
+    { "key": "seed", "label": "随机种子", "type": "integer" },
+    { "key": "vendorOptions", "label": "供应商选项", "type": "object" },
+    { "key": "image", "label": "输入图片", "type": "resource" }
+  ],
+  "auth": { "type": "bearer", "config_key": "api_key" },
+  "capabilities": {
+    "endpoints": ["/v1/images/generations", "/v1/images/edits"],
+    "request_formats": ["json", "form", "multipart", "binary"],
+    "streaming": false,
+    "model_discovery": false
+  },
+  "models": []
+}

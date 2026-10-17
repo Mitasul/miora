@@ -43,6 +43,14 @@ fn text_blocks(value: &Value) -> Result<Value, String> {
 }
 
 pub(crate) fn messages_to_chat(input: &Value, model: &str) -> Result<Value, String> {
+    messages_to_chat_with_thinking(input, model, false)
+}
+
+pub(crate) fn messages_to_chat_with_thinking(
+    input: &Value,
+    model: &str,
+    retain_blocks: bool,
+) -> Result<Value, String> {
     let mut messages = Vec::new();
     if let Some(system) = input.get("system") {
         messages.push(json!({"role":"system","content":text_blocks(system)?}));
@@ -68,6 +76,7 @@ pub(crate) fn messages_to_chat(input: &Value, model: &str) -> Result<Value, Stri
                         let result = block.get("content").cloned().unwrap_or_else(|| json!(""));
                         messages.push(json!({"role":"tool","tool_call_id":block["tool_use_id"],"content":text_blocks(&result)?}));
                     }
+                    Some("thinking" | "redacted_thinking") if retain_blocks => content.push(block.clone()),
                     Some("thinking") => thinking.push_str(block["thinking"].as_str().unwrap_or_default()),
                     Some("redacted_thinking") => {},
                     _ => content.extend(text_blocks(&json!([block]))?.as_array().expect("content array").iter().cloned()),

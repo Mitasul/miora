@@ -3,6 +3,10 @@ use serde_json::{Map, Value};
 
 pub(crate) fn provider_accepts_endpoint(provider: &Provider, endpoint: &str) -> bool {
     let endpoint = endpoint.trim_end_matches('/');
+    if let Some((channel, _)) = crate::plugins::native::mount(endpoint) {
+        return provider.name.as_ref() == channel
+            && crate::plugins::channel_plugin_id(provider).is_some();
+    }
     if endpoint == "all" {
         return true;
     }
