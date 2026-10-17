@@ -9,6 +9,7 @@ FROM planner AS builder
 COPY Cargo.toml Cargo.lock ./
 COPY README.md ./README.md
 COPY assets ./assets
+COPY sdk ./sdk
 COPY src ./src
 RUN cargo build --release --locked && cp target/release/uni-api-front /tmp/uni-api-front
 FROM debian:bookworm-slim
@@ -16,7 +17,7 @@ LABEL org.opencontainers.image.source="https://github.com/Mitasul/miora"
 LABEL org.opencontainers.image.description="Miora AI Gateway"
 ARG SOURCE_COMMIT=unknown
 ENV SOURCE_COMMIT=${SOURCE_COMMIT} MALLOC_ARENA_MAX=2 MALLOC_MMAP_THRESHOLD_=131072 MALLOC_TRIM_THRESHOLD_=131072 UNI_API_RUNTIME=rust
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates python3 python3-venv python3-pip && rm -rf /var/lib/apt/lists/*
 EXPOSE 8000
 WORKDIR /home
 COPY --from=builder /tmp/uni-api-front /usr/local/bin/uni-api-front

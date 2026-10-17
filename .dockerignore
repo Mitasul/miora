@@ -9,6 +9,10 @@
 !src/**
 !assets/
 !assets/**
+!sdk/
+!sdk/**
+!examples/
+!examples/**
 !README.md
 !Dockerfile
 !.dockerignore
