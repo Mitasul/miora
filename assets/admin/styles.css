@@ -10,17 +10,14 @@
 .channel-options-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 8px; }
 .channel-advanced-stack { display: grid; gap: 10px; margin-top: 12px; }
 .channel-step-bar { display: flex; justify-content: flex-end; margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
-.models-manual-head { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
-.models-presets { display: inline-flex; align-items: center; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); }
-.models-tools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; margin-bottom: 12px; }
+.models-tools-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; align-items: start; margin-top: 12px; }
 .models-tools-grid .test-params-details, .models-tools-grid .model-batch-pricing { margin: 0; }
 .batch-bar-label { font-size: 12px; color: var(--muted); font-weight: 500; margin-right: 4px; }
 .channels-card .channels-batch-bar { background: var(--surface-subtle); padding: 10px 20px; gap: 8px; border-bottom: 1px solid var(--line); }
-.channels-card .channel-cell-main { min-width: 210px; max-width: 280px; }
-.channels-card .channel-cell-main .subline { max-width: 230px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.channels-card .channel-cell-models { min-width: 190px; max-width: 300px; }
-.channels-card .channel-cell-keys { text-align: center; width: 72px; white-space: nowrap; }
-.channels-card .channel-cell-actions .table-actions { display: grid; grid-template-columns: repeat(4, max-content); gap: 6px; justify-content: end; }
+.channels-card .channel-cell-main { min-width: 180px; }
+.channels-card .channel-cell-type { white-space: nowrap; }
+.channels-card .channel-cell-keys { text-align: center; width: 76px; white-space: nowrap; }
+.channels-card .channel-cell-actions .table-actions { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
 .channel-balance-summary { display: grid; gap: 3px; margin: 4px 0; font-size: 12px; }
 .channel-balance-summary strong:empty { display: none; }
 .channel-balance-summary > span { color: var(--ink-secondary); }

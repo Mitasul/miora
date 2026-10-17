@@ -473,9 +473,40 @@ pub(super) fn merge_channel(original: &Value, patch: &Value) -> Result<Value, St
         return Err("Channel draft must be an object".into());
     }
     let mut base = original.clone();
+    if let Some(new_plugin) = patch
+        .get("channel_plugin")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+    {
+        let old_plugin = base
+            .get("channel_plugin")
+            .or_else(|| base.pointer("/preferences/channel_plugin"))
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned();
+        if let Some(obj) = base.as_object_mut() {
+            obj.remove("engine");
+            if !old_plugin.is_empty() && old_plugin != new_plugin {
+                obj.remove("plugin_config");
+                if let Some(prefs) = obj.get_mut("preferences").and_then(Value::as_object_mut) {
+                    prefs.remove("channel_plugin");
+                    prefs.remove("plugin_config");
+                }
+            }
+        }
+    } else if patch.get("engine").is_some() && patch.get("channel_plugin").is_none() {
+        if let Some(obj) = base.as_object_mut() {
+            obj.remove("channel_plugin");
+            obj.remove("plugin_config");
+            if let Some(prefs) = obj.get_mut("preferences").and_then(Value::as_object_mut) {
+                prefs.remove("channel_plugin");
+                prefs.remove("plugin_config");
+            }
+        }
+    }
     if patch.get("plugin_config").is_some() && base.get("plugin_config").is_none() {
-        if let Some(config) = original.pointer("/preferences/plugin_config") {
-            base["plugin_config"] = config.clone();
+        if let Some(config) = base.pointer("/preferences/plugin_config").cloned() {
+            base["plugin_config"] = config;
         }
     }
     merge_value(&base, patch, "")

@@ -22,7 +22,7 @@ export function nativeProxyURL(plugin, channel, origin = '') {
 export function canPreview(capabilities, endpoint) {
   return capabilities?.body_supported === true && capabilities.preview_supported !== false && array(capabilities.endpoints).includes(endpoint);
 }
-export function shouldSendBaseURL(existing, value, savedURL) { return Boolean(value) && (!existing || value !== savedURL); }
+export function shouldSendBaseURL(existing, value, savedURL) { return Boolean(value) && (!existing || value !== savedURL || Boolean(existing.channel_plugin)); }
 export function balancePluginOptions(plugins, selected = '') {
   const options = [{ value: '', label: '自动匹配已安装插件' }, ...plugins.filter(plugin => plugin.manifest?.capabilities?.balance_query).map(plugin => ({ value: plugin.id, label: `${plugin.manifest.name || plugin.id}${plugin.enabled === false ? '（已停用）' : ''}` }))];
   if (selected && !options.some(option => option.value === selected)) options.push({ value: selected, label: `${selected}（未安装）` });
@@ -85,7 +85,8 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
   }
   const currentRevision = detail?.revision ?? revision;
   const savedPlugin = config.channel_plugin || config.preferences?.channel_plugin || existing?.channel_plugin || '';
-  const savedPluginConfig = config.plugin_config || config.preferences?.plugin_config || {};
+  const initialSavedPluginConfig = config.plugin_config || config.preferences?.plugin_config || {};
+  let savedPluginConfig = initialSavedPluginConfig;
   const savedEngine = config.engine || existing?.engine || '';
   const savedURL = config.base_url || existing?.base_url || '';
   const types = plugins.filter(plugin => ['builtin', 'service', 'managed'].includes(plugin.kind) && (plugin.kind === 'builtin' || array(plugin.manifest?.capabilities?.endpoints).length || plugin.manifest?.native_proxy)).map(plugin => ({
@@ -95,7 +96,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
   }));
   let selected = existing ? savedPlugin ? `service:${savedPlugin}` : `builtin:${savedEngine}` : (initialType && types.some(type => type.value === initialType) ? initialType : types.find(type => type.value === 'builtin:codex')?.value || types.find(type => type.value === 'builtin:gpt')?.value || types[0]?.value || '');
   if (existing && !types.some(type => type.value === selected)) types.unshift({ value: selected, label: `${savedPlugin || savedEngine || '自动识别'}（已配置类型）`, kind: savedPlugin ? 'service' : 'builtin', plugin: null });
-  const options = existing ? types.filter(type => savedPlugin ? type.value === selected : type.kind === 'builtin') : types;
+  const options = types;
   const getType = () => types.find(type => type.value === selected);
   const initialURL = existing ? savedURL : getType()?.plugin?.manifest?.default_base_url || '';
   const initialEndpoints = array(getType()?.plugin?.manifest?.capabilities?.endpoints);
@@ -248,7 +249,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
       form.noValidate = true;
       form.querySelector('.preview-request-controls').insertAdjacentHTML('afterend', '<section id="plugin-request-fields" class="schema-fields" hidden></section>');
       form.insertBefore(form.querySelector('.channel-tabs'), form.querySelector('.dialog-body'));
-      form.elements.channel_type.required = true; if (savedPlugin) form.elements.channel_type.disabled = true;
+      form.elements.channel_type.required = true;
       const channelMark = document.createElement('span');
       channelMark.className = 'channel-ai-mark';
       form.querySelector('label[for="f-channel_type"]').prepend(channelMark);
@@ -272,6 +273,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
         form.elements.protocol_mode.disabled = !nativeSupported;
         if (!nativeSupported) form.elements.protocol_mode.value = 'auto';
         selected = form.elements.channel_type.value;
+        savedPluginConfig = selected === `service:${savedPlugin}` ? initialSavedPluginConfig : {};
         const type = getType(), service = type?.kind === 'service', schemaRoot = form.querySelector('#channel-schema');
         if (schemaRoot.firstElementChild) schemaDrafts.set(previousType, schemaRoot.firstElementChild);
         schema = service ? type?.plugin?.manifest?.config_schema || [] : [];
@@ -292,7 +294,7 @@ export async function openChannelEditor({ existing = null, initialType = '', rev
             fields.insertAdjacentHTML('beforeend', '<section data-plugin-oauth><h3>插件 OAuth 账号</h3><div class="inline-row"><button class="button" type="button" data-plugin-oauth-action="authorize">获取授权链接</button><button class="button" type="button" data-plugin-oauth-action="refresh">刷新账号</button><button class="button" type="button" data-plugin-oauth-action="status">查看状态</button></div><label class="field"><span>授权链接（复制到浏览器）</span><input data-plugin-oauth-url readonly></label><label class="field"><span>授权码</span><input data-plugin-oauth-code autocomplete="off"></label><label class="field"><span>State</span><input data-plugin-oauth-state autocomplete="off"></label><button class="button primary" type="button" data-plugin-oauth-action="exchange">完成授权</button><p data-plugin-oauth-result role="status"></p></section>');
           }
           schemaRoot.replaceChildren(fields);
-        } else { schemaRoot.replaceChildren(); if (!urlEdited) form.elements.base_url.value = type?.plugin?.manifest?.default_base_url || ''; }
+        } else { schemaRoot.replaceChildren(); if (!urlEdited || !form.elements.base_url.value.trim()) form.elements.base_url.value = type?.plugin?.manifest?.default_base_url || ''; }
         const oauthHelper = form.querySelector('#channel-oauth-helper');
         const isOAuthChannel = Boolean(oauthProvider);
         if (oauthHelper) oauthHelper.hidden = !isOAuthChannel;
