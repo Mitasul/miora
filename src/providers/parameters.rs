@@ -85,6 +85,8 @@ pub(super) fn profile(provider: &Provider, path: &str) -> Profile {
         return match path {
             "/v1/chat/completions" => Profile::Chat,
             "/v1/responses" => Profile::Responses,
+            "/v1/messages" => Profile::Claude,
+            _ if crate::protocols::dialects::gemini_route(path).is_some() => Profile::Gemini,
             _ => Profile::Unsupported,
         };
     }
@@ -116,9 +118,9 @@ pub(super) fn profile(provider: &Provider, path: &str) -> Profile {
         return Profile::Unsupported;
     }
     match engine.as_str() {
-        "gemini" | "vertex" | "vertex-gemini" => Profile::Gemini,
+        "gemini" | "vertex" | "vertex-gemini" | "antigravity" => Profile::Gemini,
         "claude" | "vertex-claude" | "aws" => Profile::Claude,
-        "gpt" | "openrouter" | "azure" | "azure-databricks"
+        "gpt" | "openrouter" | "azure" | "azure-databricks" | "cloudflare"
             if provider
                 .base_url
                 .to_ascii_lowercase()
@@ -126,7 +128,7 @@ pub(super) fn profile(provider: &Provider, path: &str) -> Profile {
         {
             Profile::Responses
         }
-        "gpt" | "openrouter" | "azure" | "azure-databricks" => Profile::Chat,
+        "gpt" | "openrouter" | "azure" | "azure-databricks" | "cloudflare" => Profile::Chat,
         _ => Profile::Unsupported,
     }
 }

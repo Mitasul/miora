@@ -240,7 +240,9 @@ export function createParametersEditor(root, { policy, onChange = () => {} } = {
       if (destroyed) return;
       capabilities = next;
       const summary = root.querySelector('.parameter-capability-state');
-      summary.textContent = next?.plugin_envelope ? '宿主执行信封：仅处理 request.body，不是插件内部最终请求。' : next ? `当前协议 ${next.profile || '未提供'} · ${next.endpoint || ''}` : '尚未读取参数能力。';
+      const profileLabels = { chat: 'OpenAI Chat Completions', responses: 'OpenAI Responses', 'codex-responses': 'Codex Responses', claude: 'Anthropic Messages (Claude)', gemini: 'Google Gemini' };
+      const profileName = profileLabels[next?.profile] || (next?.profile && next.profile !== 'unsupported' ? next.profile : '');
+      summary.textContent = next?.plugin_envelope ? '宿主执行信封：仅处理 request.body，不是插件内部最终请求。' : next ? (profileName ? `当前渠道协议：${profileName} · ${next.endpoint || ''}` : `当前端点 ${next.endpoint || ''} 无需对话生成参数（请求头策略仍生效）`) : '尚未读取参数能力。';
       renderGeneration(); renderHeaders(); renderSystem();
     },
     setCapabilityError(error) { root.querySelector('.parameter-capability-state').textContent = `参数能力读取失败：${error.message}。已有策略不会被清空。`; },

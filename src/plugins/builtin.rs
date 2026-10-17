@@ -114,7 +114,7 @@ pub(crate) fn build_attempt(
         .and_then(Value::as_str)
         == Some("native");
     let native_responses_wire = matches!(path, "/v1/responses" | "/v1/responses/compact")
-        && (native_mode
+        && ((native_mode && matches!(engine.as_str(), "gpt" | "openrouter" | "codex"))
             || engine == "codex"
             || (engine == "gpt"
                 && provider
@@ -332,21 +332,7 @@ pub(crate) fn build_attempt(
             )
         }
         "antigravity" if wire_path == "/v1/chat/completions" => {
-            let inner = chat_to_gemini(&payload, original_model)?;
-            let project_id = provider
-                .preferences
-                .get("project_id")
-                .and_then(Value::as_str)
-                .filter(|v| !v.trim().is_empty())
-                .unwrap_or("useful-wave-antigravity");
-            payload = json!({
-                "project": project_id,
-                "model": original_model,
-                "request": inner,
-                "requestType": "agent",
-                "userAgent": "antigravity",
-                "requestId": format!("agent-{request_id}"),
-            });
+            payload = chat_to_gemini(&payload, original_model)?;
             let base = provider.base_url.trim_end_matches('/');
             let url = if provider_stream {
                 format!("{base}/v1internal:streamGenerateContent?alt=sse")
@@ -619,6 +605,22 @@ pub(crate) fn build_attempt(
             normalize_azure_token_limit(&mut payload, original_model);
         }
         parameters::record_constraints(&before_constraints, &payload, &mut policy_report);
+    }
+    if engine == "antigravity" && wire_path == "/v1/chat/completions" {
+        let project_id = provider
+            .preferences
+            .get("project_id")
+            .and_then(Value::as_str)
+            .filter(|v| !v.trim().is_empty())
+            .unwrap_or("useful-wave-antigravity");
+        payload = json!({
+            "project": project_id,
+            "model": original_model,
+            "request": payload,
+            "requestType": "agent",
+            "userAgent": "antigravity",
+            "requestId": format!("agent-{request_id}"),
+        });
     }
     if engine == "codex" && wire_path != "/v1/responses/compact" && !is_alpha_search {
         crate::providers::codex::compat::search_history(&mut payload);

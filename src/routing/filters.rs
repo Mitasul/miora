@@ -23,6 +23,12 @@ pub(crate) fn provider_accepts_endpoint(provider: &Provider, endpoint: &str) -> 
             "gemini" | "vertex" | "vertex-gemini" => {
                 crate::protocols::dialects::gemini_route(endpoint).is_some()
             }
+            "antigravity" => {
+                matches!(
+                    endpoint,
+                    "/v1/chat/completions" | "/v1/responses" | "/v1/messages"
+                ) || crate::protocols::dialects::gemini_route(endpoint).is_some()
+            }
             "gpt" | "openrouter" => {
                 !matches!(endpoint, "/v1/messages")
                     && crate::protocols::dialects::gemini_route(endpoint).is_none()
