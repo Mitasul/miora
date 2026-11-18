@@ -1,7 +1,7 @@
 [project]
-name = "Miora"
+name = "Zoaholic"
 version = "1.7.27"
-description = "A multi-dialect LLM API gateway built upon Zoaholic and uni-api"
+description = "Miora - A multi-dialect LLM API gateway built upon Zoaholic and uni-api"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
