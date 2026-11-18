@@ -1,8 +1,10 @@
-import { BarChart3, CheckCircle2, Edit, Files, Folder, Play, Power, Puzzle, Search, Trash2, X, XCircle } from 'lucide-react';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
+import { ArrowDown, ArrowUp, ArrowUpDown, BarChart3, Boxes, CheckCircle2, Copy, Edit, Files, Folder, MoreHorizontal, Play, Power, Puzzle, Search, Trash2, X, XCircle } from 'lucide-react';
 import type React from 'react';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { ProviderBatchActions } from './ProviderBatchActions';
 import { selectedProviderNames, type BatchProvider } from '../lib/batchProviders';
+import { toastSuccess } from '../../../components/Toast';
 
 import { ProviderLogo } from '../../../components/ProviderLogos';
 import type { Segment } from '../types';
@@ -11,8 +13,41 @@ import type { Segment } from '../types';
 // 修改方式：把原筛选栏、移动端卡片、桌面表格和不活跃分组整体迁移，并用 props 注入 handlers。
 // 目的：保持列表交互不变，同时让页面骨架更清晰。
 
-const batchButtonClass = 'px-3 py-2 text-sm rounded-lg border border-border hover:bg-muted transition-all duration-150 active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:pointer-events-none';
+const batchButtonClass = 'px-3 py-2 text-sm rounded-lg border border-border hover:bg-muted transition-colors duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50 disabled:pointer-events-none';
 const batchCheckboxClass = 'h-4 w-4 shrink-0 rounded border-border accent-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-50';
+
+function extractModelLabels(provider: any): string[] {
+  const raw = Array.isArray(provider?.model)
+    ? provider.model
+    : Array.isArray(provider?.models)
+    ? provider.models
+    : [];
+  const names: string[] = [];
+  for (const item of raw) {
+    if (typeof item === 'string' && item.trim()) {
+      names.push(item.trim());
+    } else if (item && typeof item === 'object') {
+      for (const [upstream, alias] of Object.entries(item)) {
+        const label = typeof alias === 'string' && alias.trim() ? alias.trim() : upstream.trim();
+        if (label) names.push(label);
+      }
+    }
+  }
+  return names;
+}
+
+type SortField = 'default' | 'name' | 'keys' | 'models' | 'status' | 'weight';
+type SortDir = 'desc' | 'asc';
+
+function extractShortHost(baseUrl?: string): string {
+  if (!baseUrl || typeof baseUrl !== 'string') return '';
+  try {
+    const u = new URL(baseUrl.trim());
+    return u.host;
+  } catch {
+    return baseUrl.replace(/^https?:\/\//, '').split('/')[0] || '';
+  }
+}
 
 export interface ProviderListProps {
   providers: BatchProvider[];
@@ -66,6 +101,26 @@ export function ProviderList({
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = useState(false);
+  const [sortField, setSortField] = useState<SortField>('default');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const toggleSort = (field: Exclude<SortField, 'default'>) => {
+    if (sortField !== field) {
+      setSortField(field);
+      setSortDir(field === 'name' ? 'asc' : 'desc');
+    } else if (sortDir === (field === 'name' ? 'asc' : 'desc')) {
+      setSortDir(field === 'name' ? 'desc' : 'asc');
+    } else {
+      setSortField('default');
+    }
+  };
+
+  const renderSortIcon = (field: Exclude<SortField, 'default'>) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 opacity-45 group-hover/th:opacity-85 transition-opacity" />;
+    return sortDir === 'asc'
+      ? <ArrowUp className="w-3 h-3 text-primary" />
+      : <ArrowDown className="w-3 h-3 text-primary" />;
+  };
   const visibleNames = useMemo(() => segments.flatMap(segment =>
     segment.type === 'active' ? [segment.item.p.provider] : segment.items.map(item => item.p.provider)), [segments]);
   const selectedNames = selectedProviderNames(visibleNames, selected);
@@ -100,6 +155,7 @@ export function ProviderList({
     const isEnabled = p.enabled !== false;
     const groups = Array.isArray(p.groups) ? p.groups : p.group ? [p.group] : ['default'];
     const plugins = p.preferences?.enabled_plugins || [];
+    const modelLabels = extractModelLabels(p);
     const weight = p.preferences?.weight ?? p.weight ?? 0;
 
     return (
@@ -109,7 +165,7 @@ export function ProviderList({
             {selecting && <input type="checkbox" className={batchCheckboxClass} aria-label={`选择渠道 ${p.provider}`} checked={selected.has(p.provider)} disabled={batchBusy} onChange={() => toggleSelected(p.provider)} />}
             <ProviderLogo name={p.provider} engine={p.engine} baseUrl={p.base_url} />
             <div>
-              <div className={`font-medium ${isEnabled ? 'text-foreground' : 'text-muted-foreground'}`}>{p.provider}</div>
+              <div className={`font-semibold ${isEnabled ? 'text-foreground' : 'text-muted-foreground'}`}>{p.provider}</div>
               <div className="text-xs text-muted-foreground font-mono">{p.engine || 'openai'}</div>
               {p.remark && (
                 <div className="mt-1 text-xs text-muted-foreground break-words whitespace-pre-wrap max-w-full">
@@ -118,50 +174,79 @@ export function ProviderList({
               )}
             </div>
           </div>
-          <span className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium ${isEnabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500' : 'bg-red-500/10 text-red-600 dark:text-red-500'}`}>
+          <button
+            type="button"
+            onClick={() => handleToggleProvider(idx)}
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-full text-xs font-medium transition-colors ${isEnabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+          >
             {isEnabled ? <CheckCircle2 className="w-3 h-3" /> : <X className="w-3 h-3" />}
             {isEnabled ? '启用' : '禁用'}
-          </span>
+          </button>
         </div>
 
-        <div className="flex flex-wrap gap-1 mb-3">
+        <div className="flex flex-wrap gap-1.5 mb-3">
           {groups.map((g: string, i: number) => (
-            <span key={i} className="flex items-center gap-1 bg-muted text-foreground px-2 py-0.5 rounded text-xs"><Folder className="w-3 h-3" />{g}</span>
+            <span key={i} className="flex items-center gap-1 bg-muted text-foreground px-2 py-0.5 rounded text-xs"><Folder className="w-3 h-3 text-muted-foreground" />{g}</span>
           ))}
+          {modelLabels.length > 0 && (
+            <span
+              className="bg-secondary text-secondary-foreground px-2 py-0.5 rounded text-xs font-mono tabular-nums flex items-center gap-1"
+              title={modelLabels.slice(0, 15).join(', ') + (modelLabels.length > 15 ? ` …共 ${modelLabels.length} 个` : '')}
+            >
+              <Boxes className="w-3 h-3 text-muted-foreground" /> {modelLabels.length} 模型
+            </span>
+          )}
           {plugins.length > 0 && (
-            <span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs flex items-center gap-1"><Puzzle className="w-3 h-3" /> {plugins.length}</span>
+            <span className="bg-primary/10 text-primary px-2 py-0.5 rounded text-xs font-mono tabular-nums flex items-center gap-1" title={plugins.join(', ')}>
+              <Puzzle className="w-3 h-3" /> {plugins.length}
+            </span>
           )}
         </div>
 
         <div className="flex items-center justify-between pt-3 border-t border-border gap-2">
           <div className="flex items-center gap-1.5 flex-shrink-0">
-            <span className="text-xs text-muted-foreground">权重:</span>
+            <span className="text-xs text-muted-foreground">权重</span>
             <input
               type="number"
               value={weight}
               onChange={e => handleUpdateWeight(idx, parseInt(e.target.value) || 0)}
-              className="w-12 bg-muted border border-border rounded px-1.5 py-1 text-center font-mono text-xs text-foreground"
+              className="w-12 bg-muted border border-border rounded px-1.5 py-1 text-center font-mono tabular-nums text-xs text-foreground"
             />
           </div>
-          <div className="flex items-center gap-0.5 flex-shrink-0">
-            <button onClick={() => { setAnalyticsProvider(getProviderAnalyticsName(p)); setAnalyticsOpen(true); }} className="p-1.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-colors" title="分析">
+          <div className="flex items-center gap-1 flex-shrink-0">
+            <button onClick={() => openTestDialog(p)} className="px-2 py-1 text-xs font-medium text-foreground bg-muted/70 hover:bg-primary/10 hover:text-primary rounded-md transition-colors inline-flex items-center gap-1" title="测试">
+              <Play className="w-3.5 h-3.5" /> 测试
+            </button>
+            <button onClick={() => { setAnalyticsProvider(getProviderAnalyticsName(p)); setAnalyticsOpen(true); }} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="用量分析">
               <BarChart3 className="w-4 h-4" />
-            </button>
-            <button onClick={() => openTestDialog(p)} className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 rounded-md transition-colors" title="测试">
-              <Play className="w-4 h-4" />
-            </button>
-            <button onClick={() => handleToggleProvider(idx)} className={`p-1.5 rounded-md transition-colors ${isEnabled ? 'text-emerald-600 dark:text-emerald-500 hover:bg-emerald-500/10' : 'text-muted-foreground hover:bg-muted'}`} title={isEnabled ? '禁用' : '启用'}>
-              <Power className="w-4 h-4" />
-            </button>
-            <button onClick={() => handleCopyProvider(p)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="复制">
-              <Files className="w-4 h-4" />
             </button>
             <button onClick={() => openModal(p, idx)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="编辑">
               <Edit className="w-4 h-4" />
             </button>
-            <button onClick={() => handleDeleteProvider(idx)} className="p-1.5 text-red-600 dark:text-red-500 hover:bg-red-500/10 rounded-md transition-colors" title="删除">
-              <Trash2 className="w-4 h-4" />
-            </button>
+            <DropdownMenu.Root>
+              <DropdownMenu.Trigger asChild>
+                <button type="button" className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" aria-label="更多操作">
+                  <MoreHorizontal className="w-4 h-4" />
+                </button>
+              </DropdownMenu.Trigger>
+              <DropdownMenu.Portal>
+                <DropdownMenu.Content align="end" sideOffset={4} className="min-w-[140px] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg p-1 z-50 text-xs">
+                  <DropdownMenu.Item onSelect={() => handleToggleProvider(idx)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted">
+                    <Power className="w-3.5 h-3.5 text-muted-foreground" />
+                    {isEnabled ? '禁用渠道' : '启用渠道'}
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Item onSelect={() => handleCopyProvider(p)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted">
+                    <Files className="w-3.5 h-3.5 text-muted-foreground" />
+                    复制渠道
+                  </DropdownMenu.Item>
+                  <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                  <DropdownMenu.Item onSelect={() => handleDeleteProvider(idx)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none text-destructive hover:bg-destructive/10">
+                    <Trash2 className="w-3.5 h-3.5" />
+                    删除渠道
+                  </DropdownMenu.Item>
+                </DropdownMenu.Content>
+              </DropdownMenu.Portal>
+            </DropdownMenu.Root>
           </div>
         </div>
 
@@ -268,6 +353,17 @@ export function ProviderList({
 
           <button id="provider-selection-toggle" type="button" disabled={batchBusy || !visibleNames.length} aria-pressed={selecting} onClick={() => { setSelecting(value => !value); setSelected(new Set()); }} className={`${batchButtonClass} text-muted-foreground ${selecting ? 'border-primary/40 bg-primary/5 text-primary' : ''}`}>{selecting ? '退出选择' : '选择'}</button>
 
+          {sortField !== 'default' && (
+            <button
+              type="button"
+              onClick={() => setSortField('default')}
+              className="flex items-center gap-1 px-3 py-2 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/15 rounded-lg transition-colors flex-shrink-0"
+              title="恢复按调度优先级与活跃度分段顺序显示"
+            >
+              <X className="w-3 h-3" /> 恢复默认顺序
+            </button>
+          )}
+
           {/* 清除筛选 */}
           {hasActiveFilters && (
             <button
@@ -335,32 +431,91 @@ export function ProviderList({
           <div className="p-12 text-center text-muted-foreground">{totalListItemCount === 0 ? '暂无渠道配置，点击右上角添加。' : '没有符合筛选条件的渠道。'}</div>
         ) : (
           <table className="w-full text-left border-collapse table-fixed">
-            <thead className="bg-muted border-b border-border text-muted-foreground text-sm font-medium">
+            <thead className="bg-muted/60 border-b border-border text-muted-foreground text-xs uppercase tracking-wider font-semibold select-none">
               <tr>
-                <th className="px-4 py-3 w-[18%]">名称</th>
-                <th className="px-4 py-3 w-[15%]">分组 / 类型</th>
-                <th className="px-4 py-3 w-[8%] text-center">Keys</th>
-                <th className="px-4 py-3 w-[10%]">模型 / 插件</th>
-                <th className="px-4 py-3 w-[10%] text-center">状态</th>
-                <th className="px-4 py-3 w-[10%] text-center">权重</th>
-                <th className="px-4 py-3 w-[29%] text-right">操作</th>
+                <th className="px-4 py-3 w-[25%]">
+                  <button type="button" onClick={() => toggleSort('name')} className="group/th inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    渠道名称 {renderSortIcon('name')}
+                  </button>
+                </th>
+                <th className="px-4 py-3 w-[15%]">分组 / 引擎</th>
+                <th className="px-4 py-3 w-[9%] text-center">
+                  <button type="button" onClick={() => toggleSort('keys')} className="group/th inline-flex items-center justify-center gap-1 hover:text-foreground transition-colors">
+                    Keys {renderSortIcon('keys')}
+                  </button>
+                </th>
+                <th className="px-4 py-3 w-[15%]">
+                  <button type="button" onClick={() => toggleSort('models')} className="group/th inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    模型 / 插件 {renderSortIcon('models')}
+                  </button>
+                </th>
+                <th className="px-4 py-3 w-[8%] text-center">
+                  <button type="button" onClick={() => toggleSort('status')} className="group/th inline-flex items-center justify-center gap-1 hover:text-foreground transition-colors">
+                    状态 {renderSortIcon('status')}
+                  </button>
+                </th>
+                <th className="px-4 py-3 w-[9%] text-center">
+                  <button type="button" onClick={() => toggleSort('weight')} className="group/th inline-flex items-center justify-center gap-1 hover:text-foreground transition-colors">
+                    权重 {renderSortIcon('weight')}
+                  </button>
+                </th>
+                <th className="px-4 py-3 w-[19%] text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border text-sm">
               {renderDesktopVirtualRoutesAccordionRows()}
               {(() => {
+                const countEffectiveKeys = (prov: any) => {
+                  const raw = Array.isArray(prov.api) ? prov.api : (typeof prov.api === 'string' && prov.api.trim() ? [prov.api] : []);
+                  const cfgDisabled = raw.filter((k: any) => {
+                    if (typeof k === 'string') return k.startsWith('!');
+                    if (k && typeof k === 'object') return (Object.keys(k)[0] || '').startsWith('!');
+                    return false;
+                  }).length;
+                  const rtDis = runtimeKeyStatus[prov.provider]?.auto_disabled?.length || 0;
+                  return Math.max(0, raw.length - cfgDisabled - rtDis);
+                };
+
                 const rows: any[] = [];
-                segments.forEach((seg) => {
-                  if (seg.type === 'active') {
-                    rows.push({ p: seg.item.p, idx: seg.item.idx, inactive: false });
-                  } else {
-                    rows.push({ type: 'collapse-btn', startIndex: seg.startIndex, count: seg.items.length });
-                    if (expandedInactiveGroups.has(seg.startIndex)) {
-                      seg.items.forEach(item => rows.push({ p: item.p, idx: item.idx, inactive: true }));
+                if (sortField === 'default') {
+                  segments.forEach((seg) => {
+                    if (seg.type === 'active') {
+                      rows.push({ p: seg.item.p, idx: seg.item.idx, inactive: false });
+                    } else {
+                      rows.push({ type: 'collapse-btn', startIndex: seg.startIndex, count: seg.items.length });
+                      if (expandedInactiveGroups.has(seg.startIndex)) {
+                        seg.items.forEach(item => rows.push({ p: item.p, idx: item.idx, inactive: true }));
+                      }
                     }
-                  }
-                });
-                return rows.map((row, ri) => {
+                  });
+                } else {
+                  const flatItems = segments.flatMap((seg) =>
+                    seg.type === 'active'
+                      ? [{ p: seg.item.p, idx: seg.item.idx, inactive: false }]
+                      : seg.items.map((it) => ({ p: it.p, idx: it.idx, inactive: true }))
+                  );
+                  flatItems.sort((a, b) => {
+                    let cmp = 0;
+                    if (sortField === 'name') {
+                      cmp = String(a.p.provider || '').localeCompare(String(b.p.provider || ''), 'zh-CN');
+                    } else if (sortField === 'keys') {
+                      cmp = countEffectiveKeys(a.p) - countEffectiveKeys(b.p);
+                    } else if (sortField === 'models') {
+                      cmp = extractModelLabels(a.p).length - extractModelLabels(b.p).length;
+                    } else if (sortField === 'status') {
+                      const sa = a.p.enabled !== false ? 1 : 0;
+                      const sb = b.p.enabled !== false ? 1 : 0;
+                      cmp = sa - sb;
+                    } else if (sortField === 'weight') {
+                      const wa = a.p.preferences?.weight ?? a.p.weight ?? 0;
+                      const wb = b.p.preferences?.weight ?? b.p.weight ?? 0;
+                      cmp = wa - wb;
+                    }
+                    return sortDir === 'asc' ? cmp : -cmp;
+                  });
+                  rows.push(...flatItems);
+                }
+                return rows.map((row) => {
                   if (row.type === 'collapse-btn') {
                     return (
                       <tr key={`ig-${row.startIndex}`}>
@@ -389,30 +544,49 @@ export function ProviderList({
                   }).length;
                   const rtStatus = runtimeKeyStatus[p.provider];
                   const rtDisabledCount = rtStatus?.auto_disabled?.length || 0;
+                  const rtCoolingCount = rtStatus?.cooling?.length || 0;
                   const enabledKeys = totalKeys - configDisabledKeys;
                   const effectiveEnabled = Math.max(0, enabledKeys - rtDisabledCount);
-                  const hasKeyIssue = configDisabledKeys > 0 || rtDisabledCount > 0;
+                  const hasKeyIssue = configDisabledKeys > 0 || rtDisabledCount > 0 || rtCoolingCount > 0;
+                  const modelLabels = extractModelLabels(p);
+                  const shortHost = extractShortHost(p.base_url);
 
                   // 模型名匹配高亮
                   const matchedModels = getMatchedModels(p);
 
                   return (<Fragment key={p.provider}>
-                  <tr key={idx} className={`transition-colors ${isInactive ? 'opacity-50' : ''} ${isEnabled ? 'hover:bg-muted/50' : 'bg-muted/30 opacity-60'}`}>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-2">
-                        {selecting && <input type="checkbox" className={batchCheckboxClass} aria-label={`选择渠道 ${p.provider}`} checked={selected.has(p.provider)} disabled={batchBusy} onChange={() => toggleSelected(p.provider)} />}
-                        <ProviderLogo name={p.provider} engine={p.engine} baseUrl={p.base_url} />
-                        <div className="min-w-0">
-                          <div className={`font-medium truncate ${isEnabled ? 'text-foreground' : 'text-muted-foreground'}`}>{p.provider}</div>
+                  <tr key={idx} className={`group/row transition-colors ${isInactive ? 'opacity-50' : ''} ${isEnabled ? 'hover:bg-muted/50' : 'bg-muted/30 opacity-60'}`}>
+                    <td className="px-4 py-3 align-top">
+                      <div className="flex items-start gap-2.5">
+                        {selecting && <input type="checkbox" className={`${batchCheckboxClass} mt-1`} aria-label={`选择渠道 ${p.provider}`} checked={selected.has(p.provider)} disabled={batchBusy} onChange={() => toggleSelected(p.provider)} />}
+                        <div className="mt-0.5 flex-shrink-0">
+                          <ProviderLogo name={p.provider} engine={p.engine} baseUrl={p.base_url} />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className={`font-medium break-words ${isEnabled ? 'text-foreground' : 'text-muted-foreground'}`}>{p.provider}</div>
+                          {shortHost && (
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigator.clipboard.writeText(p.base_url).then(() => toastSuccess('已复制上游地址'));
+                              }}
+                              className="inline-flex items-center gap-1 font-mono text-[11px] text-muted-foreground/80 hover:text-foreground truncate max-w-full mt-0.5"
+                              title={`点击复制: ${p.base_url}`}
+                            >
+                              <span className="truncate">{shortHost}</span>
+                              <Copy className="w-2.5 h-2.5 flex-shrink-0 opacity-0 group-hover/row:opacity-70 transition-opacity" />
+                            </button>
+                          )}
                           {p.remark && (
-                            <div className="text-xs text-muted-foreground truncate max-w-xs" title={p.remark}>
+                            <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words leading-relaxed mt-1">
                               {p.remark}
                             </div>
                           )}
                           {matchedModels.length > 0 && (
-                            <div className="flex flex-wrap gap-0.5 mt-0.5">
+                            <div className="flex flex-wrap gap-0.5 mt-1">
                               {matchedModels.slice(0, 2).map((m, i) => (
-                                <span key={i} className="text-[10px] font-mono px-1 py-px rounded bg-primary/10 text-primary truncate max-w-[120px]" title={m}>{m}</span>
+                                <span key={i} className="text-[10px] font-mono px-1 py-px rounded bg-primary/10 text-primary truncate max-w-[140px]" title={m}>{m}</span>
                               ))}
                               {matchedModels.length > 2 && <span className="text-[10px] text-muted-foreground">+{matchedModels.length - 2}</span>}
                             </div>
@@ -424,7 +598,7 @@ export function ProviderList({
                       <div className="flex flex-col gap-1">
                         <div className="flex gap-1 flex-wrap">
                           {groups.slice(0, 2).map((g: string, i: number) => (
-                            <span key={i} className="bg-muted text-foreground px-1.5 py-0.5 rounded text-xs truncate max-w-[80px]" title={g}>{g}</span>
+                            <span key={i} className="bg-muted text-foreground px-1.5 py-0.5 rounded text-xs truncate max-w-[90px]" title={g}>{g}</span>
                           ))}
                           {groups.length > 2 && <span className="text-xs text-muted-foreground">+{groups.length - 2}</span>}
                         </div>
@@ -434,10 +608,10 @@ export function ProviderList({
                     <td className="px-4 py-3 text-center">
                       {totalKeys > 0 ? (
                         <span
-                          className={`text-xs font-mono px-1.5 py-0.5 rounded ${
-                            hasKeyIssue ? 'bg-orange-500/10 text-orange-600 dark:text-orange-400' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500'
+                          className={`text-xs font-mono tabular-nums px-1.5 py-0.5 rounded ${
+                            hasKeyIssue ? 'bg-amber-500/12 text-amber-600 dark:text-amber-400' : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400'
                           }`}
-                          title={`可用: ${effectiveEnabled} / 总计: ${totalKeys}${configDisabledKeys > 0 ? ` (配置禁用: ${configDisabledKeys})` : ''}${rtDisabledCount > 0 ? ` (自动禁用: ${rtDisabledCount})` : ''}`}
+                          title={`可用: ${effectiveEnabled} / 总计: ${totalKeys}${configDisabledKeys > 0 ? ` (配置禁用: ${configDisabledKeys})` : ''}${rtDisabledCount > 0 ? ` (自动禁用: ${rtDisabledCount})` : ''}${rtCoolingCount > 0 ? ` (冷却中: ${rtCoolingCount})` : ''}`}
                         >
                           {effectiveEnabled}/{totalKeys}
                         </span>
@@ -446,16 +620,38 @@ export function ProviderList({
                       )}
                     </td>
                     <td className="px-4 py-3">
-                      {plugins.length > 0 ? (
-                        <span className="bg-primary/10 text-primary px-1.5 py-0.5 rounded text-xs">
-                          {plugins.length} 个
-                        </span>
-                      ) : <span className="text-muted-foreground/50">—</span>}
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {modelLabels.length > 0 ? (
+                          <span
+                            className="inline-flex items-center gap-1 bg-secondary text-secondary-foreground px-1.5 py-0.5 rounded text-xs font-mono tabular-nums"
+                            title={modelLabels.slice(0, 18).join(', ') + (modelLabels.length > 18 ? ` …共 ${modelLabels.length} 个模型` : '')}
+                          >
+                            <Boxes className="w-3 h-3 text-muted-foreground" />
+                            {modelLabels.length}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-muted-foreground/50">0 模型</span>
+                        )}
+                        {plugins.length > 0 && (
+                          <span
+                            className="inline-flex items-center gap-1 bg-primary/10 text-primary px-1.5 py-0.5 rounded text-xs font-mono tabular-nums"
+                            title={`已启用插件: ${plugins.join(', ')}`}
+                          >
+                            <Puzzle className="w-3 h-3" />
+                            {plugins.length}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-4 py-3 text-center">
-                      <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${isEnabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-500' : 'bg-red-500/10 text-red-600 dark:text-red-500'}`} title={isEnabled ? '已启用' : '已禁用'}>
-                        {isEnabled ? <CheckCircle2 className="w-4 h-4" /> : <X className="w-4 h-4" />}
-                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleProvider(idx)}
+                        className={`inline-flex items-center justify-center w-6 h-6 rounded-full transition-colors ${isEnabled ? 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 hover:bg-emerald-500/20' : 'bg-muted text-muted-foreground hover:bg-muted/80'}`}
+                        title={isEnabled ? '已启用（点击禁用）' : '已禁用（点击启用）'}
+                      >
+                        {isEnabled ? <CheckCircle2 className="w-4 h-4" /> : <X className="w-3.5 h-3.5" />}
+                      </button>
                     </td>
                     <td className="px-4 py-3 text-center">
                       <input
@@ -463,29 +659,78 @@ export function ProviderList({
                         value={weight}
                         onChange={e => handleUpdateWeight(idx, parseInt(e.target.value) || 0)}
                         onClick={e => e.stopPropagation()}
-                        className="w-14 bg-muted border border-border rounded px-1 py-1 text-center font-mono text-sm text-foreground focus:border-primary outline-none"
+                        className="w-14 bg-muted/70 border border-border rounded-md px-1.5 py-1 text-center font-mono tabular-nums text-xs text-foreground focus:border-primary outline-none"
                       />
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1">
-                        <button onClick={() => { setAnalyticsProvider(getProviderAnalyticsName(p)); setAnalyticsOpen(true); }} className="p-1.5 text-indigo-600 dark:text-indigo-400 hover:bg-indigo-500/10 rounded-md transition-colors" title="分析">
+                        <button
+                          type="button"
+                          onClick={() => openTestDialog(p)}
+                          className="px-2 py-1 text-xs font-medium text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-colors inline-flex items-center gap-1"
+                          title="测试渠道连通性"
+                        >
+                          <Play className="w-3.5 h-3.5" />
+                          <span className="hidden xl:inline">测试</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setAnalyticsProvider(getProviderAnalyticsName(p)); setAnalyticsOpen(true); }}
+                          className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                          title="渠道统计分析"
+                        >
                           <BarChart3 className="w-4 h-4" />
                         </button>
-                        <button onClick={() => openTestDialog(p)} className="p-1.5 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10 rounded-md transition-colors" title="测试">
-                          <Play className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleToggleProvider(idx)} className={`p-1.5 rounded-md transition-colors ${isEnabled ? 'text-emerald-600 dark:text-emerald-500 hover:bg-emerald-500/10' : 'text-muted-foreground hover:bg-muted'}`} title={isEnabled ? '禁用' : '启用'}>
-                          <Power className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleCopyProvider(p)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="复制">
-                          <Files className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => openModal(p, idx)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" title="编辑">
+                        <button
+                          type="button"
+                          onClick={() => openModal(p, idx)}
+                          className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                          title="编辑渠道"
+                        >
                           <Edit className="w-4 h-4" />
                         </button>
-                        <button onClick={() => handleDeleteProvider(idx)} className="p-1.5 text-red-600 dark:text-red-500 hover:bg-red-500/10 rounded-md transition-colors" title="删除">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <DropdownMenu.Root>
+                          <DropdownMenu.Trigger asChild>
+                            <button
+                              type="button"
+                              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                              title="更多操作"
+                              aria-label={`渠道 ${p.provider} 更多操作`}
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                          </DropdownMenu.Trigger>
+                          <DropdownMenu.Portal>
+                            <DropdownMenu.Content
+                              align="end"
+                              sideOffset={4}
+                              className="min-w-[148px] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg p-1 z-50 text-xs"
+                            >
+                              <DropdownMenu.Item
+                                onSelect={() => handleToggleProvider(idx)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted"
+                              >
+                                <Power className="w-3.5 h-3.5 text-muted-foreground" />
+                                {isEnabled ? '禁用渠道' : '启用渠道'}
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                onSelect={() => handleCopyProvider(p)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted"
+                              >
+                                <Files className="w-3.5 h-3.5 text-muted-foreground" />
+                                复制渠道配置
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                              <DropdownMenu.Item
+                                onSelect={() => handleDeleteProvider(idx)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                删除渠道
+                              </DropdownMenu.Item>
+                            </DropdownMenu.Content>
+                          </DropdownMenu.Portal>
+                        </DropdownMenu.Root>
                       </div>
                     </td>
                   </tr>

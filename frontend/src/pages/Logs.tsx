@@ -898,103 +898,145 @@ export default function Logs() {
     );
   };
 
-  // 单条日志的手风琴组件
+  // Token 紧凑格式化（列表扫视用 K/M，hover title 保留精确整数，遵循 §4.7.2）
+  const formatCompactTokens = (n?: number) => {
+    const val = n || 0;
+    if (val >= 1_000_000) return `${(val / 1_000_000).toFixed(2)}M`;
+    if (val >= 1_000) return `${(val / 1_000).toFixed(val >= 10_000 ? 1 : 2)}K`;
+    return String(val);
+  };
+
+  // 单条日志的手风琴组件（统一融入外层列表容器，消除重复外框噪音 §8.5）
   const LogAccordionItem = ({ log }: { log: LogEntry }) => {
     const isExpanded = expandedIds.has(log.id);
     const speedInfo = calculateSpeed(log);
-    // 修改原因：列表行不再携带 body/header 大字段，展开区域必须优先使用单条详情接口返回的数据。
-    // 修改方式：按日志 ID 从详情缓存中取完整记录，加载完成前仍用列表行显示基础信息。
-    // 目的：保持展开布局不变，同时把大字段读取延后到用户真正展开时。
     const detailLog = logDetails[log.id] || log;
     const isDetailLoading = detailLoadingIds.has(log.id);
     const detailError = detailErrorById[log.id];
-    // 缓存字段统一转成数字，目的是避免旧日志缺字段时影响列表和展开详情渲染。
     const cachedTokens = log.cached_tokens || 0;
     const cacheCreationTokens = log.cache_creation_tokens || 0;
-    const hasCacheInfo = cachedTokens > 0 || cacheCreationTokens > 0;
+    const totalLatency = log.process_time || 0;
+    // 耗时微条比例（以 15s 为满格参考）
+    const latencyPct = Math.min(100, Math.max(6, (totalLatency / 15) * 100));
+    const latencyBarCls = !log.success
+      ? 'bg-destructive/75'
+      : totalLatency > 10
+      ? 'bg-amber-500'
+      : totalLatency > 4
+      ? 'bg-primary/80'
+      : 'bg-emerald-500';
+
     return (
-      <div className="bg-card border border-border rounded-xl overflow-hidden">
-        <div className="cursor-pointer hover:bg-muted/50 transition-colors" onClick={() => toggleExpand(log.id)}>
-          {/* 第一行：核心信息 */}
-          <div className="flex items-center gap-2 sm:gap-3 p-3 sm:p-4">
+      <div className={`transition-colors ${!log.success ? 'bg-destructive/[0.025]' : ''} ${isExpanded ? 'bg-muted/20' : ''}`}>
+        <div className="cursor-pointer hover:bg-muted/45 transition-colors px-3 sm:px-4 py-2.5 sm:py-3" onClick={() => toggleExpand(log.id)}>
+          <div className="flex items-center gap-2 sm:gap-3">
             <div className="flex-shrink-0 text-muted-foreground">
               {isExpanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
             </div>
             <div className="flex-shrink-0">
-              {log.success ? <CheckCircle2 className="w-5 h-5 text-emerald-500" /> : <XCircle className="w-5 h-5 text-red-500" />}
+              {log.success ? <CheckCircle2 className="w-4 h-4 text-emerald-500" /> : <XCircle className="w-4 h-4 text-red-500" />}
             </div>
-            <div className="flex-shrink-0 text-xs sm:text-sm font-mono text-muted-foreground w-[85px] sm:w-[100px]">
+            <div className="flex-shrink-0 text-xs font-mono tabular-nums text-muted-foreground w-[78px] sm:w-[92px]">
               {formatTimestamp(log.timestamp)}
             </div>
-            <div className="flex-1 min-w-0">
-              <div className="font-medium text-foreground text-sm truncate" title={log.model || '-'}>{log.model || '-'}</div>
-              <div className="text-xs text-muted-foreground truncate">
+
+            {/* 模型 + 渠道 */}
+            <div className="flex-1 min-w-0 flex flex-col sm:flex-row sm:items-center sm:gap-2.5">
+              <span className="font-semibold text-foreground text-sm truncate" title={log.model || '-'}>
+                {log.model || '-'}
+              </span>
+              <span className="text-xs text-muted-foreground truncate">
                 {log.provider || '未知'}
-                {log.provider_key_index !== undefined && <span className="opacity-60"> [{log.provider_key_index}]</span>}
-              </div>
+                {log.provider_key_index !== undefined && <span className="opacity-60 font-mono"> [{log.provider_key_index}]</span>}
+              </span>
             </div>
+
+            {/* Key 标签（桌面端同行紧凑展示） */}
+            <div className="hidden md:flex items-center gap-1 text-xs text-muted-foreground max-w-[130px] flex-shrink-0" title={`API Key: ${log.api_key_name || log.api_key_prefix || '-'}${log.api_key_group ? ` (${log.api_key_group})` : ''}`}>
+              <Key className="w-3 h-3 flex-shrink-0 opacity-70" />
+              <span className="truncate">{log.api_key_name || log.api_key_prefix || '-'}</span>
+            </div>
+
+            {/* 标记 & 重试 */}
             <div className="hidden sm:flex items-center gap-1.5 flex-shrink-0">
-              {log.is_flagged && <span className="text-yellow-500" title="已标记"><Flag className="w-4 h-4" /></span>}
+              {log.is_flagged && <span className="text-yellow-500" title="已标记"><Flag className="w-3.5 h-3.5" /></span>}
               {(log.retry_count ?? 0) > 0 && (
-                <span className="text-orange-500 flex items-center gap-0.5 text-xs" title={`重试 ${log.retry_count} 次`}>
-                  <RotateCcw className="w-3.5 h-3.5" />{log.retry_count}
+                <span className="text-amber-500 flex items-center gap-0.5 text-xs font-mono tabular-nums" title={`重试 ${log.retry_count} 次`}>
+                  <RotateCcw className="w-3 h-3" />{log.retry_count}
                 </span>
               )}
             </div>
+
+            {/* 桌面端紧凑指标组：Token (K/M) + 费用 + 耗时微条 + 速率 */}
+            <div className="hidden lg:flex items-center gap-3 flex-shrink-0 text-xs font-mono tabular-nums">
+              <div
+                className="flex items-center justify-end gap-1 min-w-[125px]"
+                title={`输入: ${(log.prompt_tokens || 0).toLocaleString()}${cachedTokens > 0 ? ` (缓存命中 ${cachedTokens.toLocaleString()})` : ''}${cacheCreationTokens > 0 ? ` (缓存创建 ${cacheCreationTokens.toLocaleString()})` : ''} · 输出: ${(log.completion_tokens || 0).toLocaleString()} · 总计: ${(log.total_tokens || 0).toLocaleString()}`}
+              >
+                {cachedTokens > 0 ? (
+                  <>
+                    <span className="text-muted-foreground">{formatCompactTokens(Math.max(0, (log.prompt_tokens || 0) - cachedTokens))}</span>
+                    <span className="text-[10px] text-emerald-600 dark:text-emerald-400">+{formatCompactTokens(cachedTokens)}</span>
+                  </>
+                ) : (
+                  <span className="text-muted-foreground">{formatCompactTokens(log.prompt_tokens)}</span>
+                )}
+                <span className="text-muted-foreground/45">→</span>
+                <span className="text-foreground font-medium">{formatCompactTokens(log.completion_tokens)}</span>
+              </div>
+
+              <div className="w-[64px] text-right">
+                {log.success && (log.prompt_price || log.completion_price) ? (() => {
+                  const cost = ((log.prompt_tokens || 0) * (log.prompt_price || 0) + (log.completion_tokens || 0) * (log.completion_price || 0)) / 1_000_000;
+                  return cost > 0 ? (
+                    <span className="text-amber-600 dark:text-amber-400" title={`输入 $${log.prompt_price}/M · 输出 $${log.completion_price}/M`}>
+                      ${cost >= 0.01 ? cost.toFixed(3) : cost.toFixed(5)}
+                    </span>
+                  ) : <span className="text-muted-foreground/35">—</span>;
+                })() : <span className="text-muted-foreground/35">—</span>}
+              </div>
+
+              <div
+                className="flex items-center gap-1.5 w-[108px] justify-end"
+                title={`总耗时: ${log.process_time?.toFixed(2) || '-'}s · 首字响应: ${log.first_response_time?.toFixed(2) || '-'}s${speedInfo ? ` · 速度: ${speedInfo.speed} t/s` : ''}`}
+              >
+                <div className="w-9 h-1.5 rounded-full bg-muted overflow-hidden flex-shrink-0">
+                  <div className={`h-full rounded-full ${latencyBarCls}`} style={{ width: `${latencyPct}%` }} />
+                </div>
+                <span className="text-muted-foreground w-[46px] text-right">{log.process_time?.toFixed(2) || '-'}s</span>
+              </div>
+
+              <div className="w-[66px] text-right">
+                {speedInfo ? (
+                  <span className={speedInfo.color} title="生成速度">{speedInfo.speed} t/s</span>
+                ) : (
+                  <span className="text-muted-foreground/35">—</span>
+                )}
+              </div>
+            </div>
+
             <div className="flex-shrink-0">
-              <span className={`px-1.5 sm:px-2 py-0.5 sm:py-1 rounded text-xs font-mono font-medium border ${getStatusColor(log.success, log.status_code)}`}>
+              <span className={`px-1.5 py-0.5 rounded text-xs font-mono tabular-nums font-medium border ${getStatusColor(log.success, log.status_code)}`}>
                 {log.status_code || '-'}
               </span>
             </div>
           </div>
-          {/* 第二行：详细指标 */}
-          <div className="flex items-center gap-2 sm:gap-4 px-3 sm:px-4 pb-3 sm:pb-4 pt-0 text-xs flex-wrap">
-            <div className="flex items-center gap-1 text-muted-foreground" title={`API Key: ${log.api_key_name || log.api_key_prefix || '-'}`}>
-              <Key className="w-3.5 h-3.5" />
-              <span className="max-w-[80px] sm:max-w-[120px] truncate">{log.api_key_name || log.api_key_prefix || '-'}</span>
-            </div>
-            {log.api_key_group && (
-              <div className="hidden sm:flex items-center gap-1 text-muted-foreground">
-                <Users className="w-3.5 h-3.5" /><span>{log.api_key_group}</span>
-              </div>
-            )}
-            <div className="hidden lg:flex items-center gap-1 text-muted-foreground font-mono">
-              <Globe className="w-3.5 h-3.5" /><span>{log.client_ip || '-'}</span>
-            </div>
-            <div className="flex-1" />
-            <div className="flex items-center gap-1 font-mono" title={`输入: ${log.prompt_tokens || 0}${cachedTokens > 0 ? `，缓存命中 ${cachedTokens}` : ''}${cacheCreationTokens > 0 ? `，缓存创建 ${cacheCreationTokens}` : ''}；输出: ${log.completion_tokens || 0}；总计: ${log.total_tokens || 0}`}>
-              {/* 列表摘要只在命中缓存时追加弱化文本，避免缓存数字抢占主要 token 信息。 */}
-              {cachedTokens > 0 ? (
-                <>
-                  <span className="text-muted-foreground">{Math.max(0, (log.prompt_tokens || 0) - cachedTokens)}</span>
-                  <span className="text-[10px] text-emerald-600/80 dark:text-emerald-400/80">(+{cachedTokens} {(cachedTokens / (log.prompt_tokens || 1) * 100).toFixed(1)}%)</span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">{log.prompt_tokens || 0}</span>
-              )}
-              <span className="text-muted-foreground/50">→</span>
-              <span className="text-blue-600 dark:text-blue-400">{log.completion_tokens || 0}</span>
-            </div>
-            {log.success && (log.prompt_price || log.completion_price) ? (() => {
-              const cost = ((log.prompt_tokens || 0) * (log.prompt_price || 0) + (log.completion_tokens || 0) * (log.completion_price || 0)) / 1_000_000;
-              return cost > 0 ? (
-                <span className="text-amber-600 dark:text-amber-400 font-mono text-xs" title={`输入 $${log.prompt_price}/M · 输出 $${log.completion_price}/M`}>
-                  ${cost >= 0.01 ? cost.toFixed(4) : cost.toFixed(6)}
-                </span>
-              ) : null;
-            })() : null}
-            <div className="flex items-center gap-1 text-muted-foreground" title={`总耗时: ${log.process_time?.toFixed(2)}s, 首响: ${log.first_response_time?.toFixed(2) || '-'}s`}>
-              <Clock className="w-3.5 h-3.5" />
-              <span className="font-mono">{log.process_time?.toFixed(2) || '-'}s</span>
-              {log.first_response_time !== undefined && (
-                <span className="text-muted-foreground/60 hidden sm:inline">(首响 {log.first_response_time.toFixed(2)}s)</span>
-              )}
-            </div>
-            {speedInfo && (
-              <div className={`flex items-center gap-1 font-mono ${speedInfo.color}`} title="生成速度">
-                <Zap className="w-3.5 h-3.5" /><span>{speedInfo.speed} t/s</span>
-              </div>
-            )}
+
+          {/* 移动端/窄屏补充指标行 */}
+          <div className="flex lg:hidden items-center gap-2.5 pt-1.5 pl-6 text-xs font-mono tabular-nums flex-wrap text-muted-foreground">
+            <span className="flex items-center gap-1 font-sans">
+              <Key className="w-3 h-3" />
+              <span className="max-w-[96px] truncate">{log.api_key_name || log.api_key_prefix || '-'}</span>
+            </span>
+            <span className="flex-1" />
+            <span>
+              {formatCompactTokens(log.prompt_tokens)} → <span className="text-foreground">{formatCompactTokens(log.completion_tokens)}</span>
+            </span>
+            <span className="flex items-center gap-1">
+              <Clock className="w-3 h-3" />
+              {log.process_time?.toFixed(2) || '-'}s
+            </span>
+            {speedInfo && <span className={speedInfo.color}>{speedInfo.speed} t/s</span>}
           </div>
         </div>
         {/* Expanded Content */}
@@ -1098,7 +1140,7 @@ export default function Logs() {
   };
 
   return (
-    <div className="space-y-4 sm:space-y-6 animate-in fade-in duration-500 font-sans pb-12 h-full flex flex-col">
+    <div className="space-y-4 font-sans h-full min-h-0 flex flex-col">
       {/* Header */}
       <div className="flex justify-between items-center flex-shrink-0">
         <div>
@@ -1245,14 +1287,16 @@ export default function Logs() {
       </div>
 
       {/* Logs List */}
-      <div className="flex-1 overflow-auto space-y-2">
+      <div className="flex-1 overflow-auto space-y-3">
         {logs.length === 0 && !loading ? (
           <div className="flex flex-col items-center justify-center p-16 text-muted-foreground bg-card border border-border rounded-xl">
             <FileText className="w-12 h-12 mb-4 opacity-50" />
             <p>未找到匹配的日志</p>
           </div>
         ) : (
-          logs.map((log) => <LogAccordionItem key={log.id} log={log} />)
+          <div className="bg-card border border-border rounded-xl overflow-hidden divide-y divide-border/75">
+            {logs.map((log) => <LogAccordionItem key={log.id} log={log} />)}
+          </div>
         )}
 
         {hasMore && logs.length > 0 && (

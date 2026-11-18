@@ -7,11 +7,12 @@ import { toastSuccess, toastError, toastWarning } from '../components/Toast';
 import {
   Key, Plus, RefreshCw, Copy, Trash2, Edit, Save, X, Search,
   Folder, CheckCircle2, AlertCircle, AlertTriangle,
-  Wand2, Wallet, Brain, Download, Check, Ban, BarChart3,
+  Wand2, Wallet, Brain, Download, Check, Ban, BarChart3, GitFork, MoreHorizontal,
   ShieldCheck, Puzzle, ArrowRight, Smartphone, PackageCheck,
-  Globe, Zap, Power, PowerOff
+  Globe, Zap, Power, PowerOff, ArrowUp, ArrowDown, ArrowUpDown, XCircle
 } from 'lucide-react';
 import * as Dialog from '@radix-ui/react-dialog';
+import * as DropdownMenu from '@radix-ui/react-dropdown-menu';
 import { KeyAnalyticsSheet } from '../components/KeyAnalyticsSheet';
 import { KeyBranchUsage } from '../components/KeyBranchUsage';
 import { InheritedKeyField } from '../components/InheritedKeyField';
@@ -55,6 +56,94 @@ interface ApiKeyState {
   credits: number | null;
   total_cost: number;
   created_at: string;
+}
+
+interface KeyPeriodUsage {
+  requests: number;
+  totalTokens: number;
+  costUsd: number;
+  successRate: number;
+  lastUsed?: string | null;
+}
+
+type KeySortField = 'default' | 'name' | 'usage' | 'status' | 'created';
+type KeySortDir = 'desc' | 'asc';
+
+const SHA256_K = new Uint32Array([
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+]);
+
+function sha256Hex16(input: string): string {
+  const bytes = new TextEncoder().encode(input || '');
+  const bitLen = bytes.length * 8;
+  const paddedLen = (((bytes.length + 8) >> 6) + 1) << 6;
+  const buf = new Uint8Array(paddedLen);
+  buf.set(bytes);
+  buf[bytes.length] = 0x80;
+  const view = new DataView(buf.buffer);
+  view.setUint32(paddedLen - 8, Math.floor(bitLen / 0x100000000), false);
+  view.setUint32(paddedLen - 4, bitLen >>> 0, false);
+
+  let h0 = 0x6a09e667, h1 = 0xbb67ae85, h2 = 0x3c6ef372, h3 = 0xa54ff53a;
+  let h4 = 0x510e527f, h5 = 0x9b05688c, h6 = 0x1f83d9ab, h7 = 0x5be0cd19;
+  const w = new Uint32Array(64);
+  const rotr = (x: number, n: number) => (x >>> n) | (x << (32 - n));
+
+  for (let offset = 0; offset < paddedLen; offset += 64) {
+    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4, false);
+    for (let i = 16; i < 64; i++) {
+      const s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >>> 3);
+      const s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >>> 10);
+      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
+    }
+    let a = h0, b = h1, c = h2, d = h3, e = h4, f = h5, g = h6, h = h7;
+    for (let i = 0; i < 64; i++) {
+      const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + S1 + ch + SHA256_K[i] + w[i]) >>> 0;
+      const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (S0 + maj) >>> 0;
+      h = g; g = f; f = e; e = (d + temp1) >>> 0;
+      d = c; c = b; b = a; a = (temp1 + temp2) >>> 0;
+    }
+    h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+  }
+  return [h0, h1].map(n => n.toString(16).padStart(8, '0')).join('');
+}
+
+function formatKeyDateTime(raw?: string): string {
+  if (!raw) return '—';
+  const d = new Date(raw);
+  if (Number.isNaN(d.getTime())) return raw;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}/${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
+function formatCompactNum(n: number): string {
+  if (n >= 1_000_000_000) return `${(n / 1_000_000_000).toFixed(2)}B`;
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(Math.round(n));
+}
+
+function formatKeyPeriodLine(u?: KeyPeriodUsage): string {
+  if (!u || u.requests <= 0) return '$0.0000';
+  if (u.costUsd > 0) {
+    return u.costUsd >= 100 ? `$${u.costUsd.toFixed(2)}` : `$${u.costUsd.toFixed(4)}`;
+  }
+  if (u.totalTokens > 0) {
+    return `${formatCompactNum(u.totalTokens)} tok · ${u.requests} 次`;
+  }
+  return `${u.requests} 次`;
 }
 
 interface QuotaDisplayItem {
@@ -377,7 +466,14 @@ export default function Admin() {
   // 目的：让打开、关闭和切换 Key 的状态更清晰，避免后续增加关闭动画或复用组件时互相影响。
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [branchUsageKey, setBranchUsageKey] = useState<ApiKeyData | null>(null);
+  const [keyUsageMap, setKeyUsageMap] = useState<Record<string, { today?: KeyPeriodUsage; days30?: KeyPeriodUsage }>>({});
 
+  // 列表搜索、筛选与排序状态
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterGroup, setFilterGroup] = useState('');
+  const [filterStatus, setFilterStatus] = useState<'' | 'enabled' | 'disabled'>('');
+  const [sortField, setSortField] = useState<KeySortField>('default');
+  const [sortDir, setSortDir] = useState<KeySortDir>('desc');
 
   // Edit Sheet
   const [isSheetOpen, setIsSheetOpen] = useState(false);
@@ -387,6 +483,7 @@ export default function Admin() {
   const [formApi, setFormApi] = useState('');
   const [formName, setFormName] = useState('');
   const [formRole, setFormRole] = useState('');
+  const [formRemark, setFormRemark] = useState('');
   const [formGroups, setFormGroups] = useState<string[]>(['default']);
   const [formModels, setFormModels] = useState<string[]>([]);
   // 修改原因：credits、全局 rate_limit 和模型 rate_limit 已统一迁移到 preferences.quota。
@@ -488,6 +585,38 @@ export default function Admin() {
         const pd = await pluginsRes.json();
         setAllPlugins(Array.isArray(pd.interceptor_plugins) ? pd.interceptor_plugins : Array.isArray(pd.plugins) ? pd.plugins : Array.isArray(pd) ? pd : []);
       }
+
+      // 异步非阻塞拉取各 Key 今日与近 30 天用量快照
+      const tzOffset = -new Date().getTimezoneOffset();
+      Promise.all([
+        apiFetch(`/v1/stats/dashboard_overview?range_key=today&tz_offset_minutes=${tzOffset}&recent_limit=10&include_heatmap=false`, { headers }).catch(() => null),
+        apiFetch(`/v1/stats/dashboard_overview?range_key=30d&tz_offset_minutes=${tzOffset}&recent_limit=10&include_heatmap=false`, { headers }).catch(() => null),
+      ]).then(async ([todayRes, d30Res]) => {
+        const nextUsage: Record<string, { today?: KeyPeriodUsage; days30?: KeyPeriodUsage }> = {};
+        const parseRows = (rows: any[], period: 'today' | 'days30') => {
+          for (const row of rows || []) {
+            const kh = String(row?.key_hash || '').trim().toLowerCase();
+            if (!kh) continue;
+            if (!nextUsage[kh]) nextUsage[kh] = {};
+            nextUsage[kh][period] = {
+              requests: Number(row.requests || 0),
+              totalTokens: Number(row.total_tokens || 0),
+              costUsd: Number(row.cost_usd || 0),
+              successRate: Number(row.success_rate ?? 0),
+              lastUsed: row.last_used || null,
+            };
+          }
+        };
+        if (todayRes?.ok) {
+          const td = await todayRes.json().catch(() => null);
+          if (td?.key_breakdown) parseRows(td.key_breakdown, 'today');
+        }
+        if (d30Res?.ok) {
+          const d30 = await d30Res.json().catch(() => null);
+          if (d30?.key_breakdown) parseRows(d30.key_breakdown, 'days30');
+        }
+        setKeyUsageMap(nextUsage);
+      }).catch(() => {});
     } catch (err) {
       console.error('Failed to load API keys:', err);
     } finally {
@@ -606,6 +735,7 @@ export default function Admin() {
       setFormApi(source.api || '');
       setFormName(source.name || source.preferences?.name || '');
       setFormRole(source.role || '');
+      setFormRemark(typeof source.preferences?.remark === 'string' ? source.preferences.remark : '');
 
       // Parse groups
       let groups: string[] = ['default'];
@@ -675,6 +805,7 @@ export default function Admin() {
       setFormApi('');
       setFormName('');
       setFormRole('');
+      setFormRemark('');
       setFormGroups(['default']);
       setFormModels(['all']);
       setFormQuotaRules([]);
@@ -889,6 +1020,11 @@ export default function Admin() {
     } else {
       delete prefs.enabled_plugins;
     }
+    if (formRemark.trim()) {
+      prefs.remark = formRemark.trim();
+    } else {
+      delete prefs.remark;
+    }
     target.preferences = prefs;
     if (formParentId) {
       delete prefs.credits;
@@ -900,6 +1036,10 @@ export default function Admin() {
       if (overrideFields.has('preferences.excluded_models')) prefs.excluded_models ??= [];
       if (overrideFields.has('preferences.enabled_plugins')) prefs.enabled_plugins ??= [];
       target = retainKeyOverrides(target, overrideFields);
+      if (formRemark.trim()) {
+        target.preferences ??= {};
+        target.preferences.remark = formRemark.trim();
+      }
     }
 
     try {
@@ -1160,7 +1300,60 @@ export default function Admin() {
   };
 
   const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
+    navigator.clipboard.writeText(text).then(() => toastSuccess('API Key 已复制'));
+  };
+
+  const buildQuotaSummaryBar = (
+    quota: ReturnType<typeof getQuotaInfo>,
+    state?: ApiKeyState
+  ): { label: string; usedPct: number; hasCap: boolean; extraRules: number } => {
+    const items = quota.items || [];
+    const primaryItem =
+      items.find(i => i.scope === 'key' && i.metric === 'cost') ||
+      items.find(i => i.metric === 'cost') ||
+      items.find(i => i.scope === 'key' && i.metric === 'request') ||
+      items.find(i => i.scope === 'key' && (i.metric === 'token' || i.metric === 'token_out' || i.metric === 'token_in')) ||
+      items[0];
+
+    if (primaryItem && primaryItem.limit > 0) {
+      const used = Math.max(0, primaryItem.current);
+      const limit = primaryItem.limit;
+      const usedPct = Math.min(100, Math.max(0, (used / limit) * 100));
+      let label = '';
+      if (primaryItem.metric === 'cost') {
+        label = `额度: $${used.toFixed(2)} / $${limit.toFixed(2)}`;
+      } else if (primaryItem.metric === 'request') {
+        label = `请求: ${formatCompactNum(used)} / ${formatCompactNum(limit)}`;
+      } else {
+        label = `配额: ${formatCompactNum(used)} / ${formatCompactNum(limit)}`;
+      }
+      return {
+        label,
+        usedPct,
+        hasCap: true,
+        extraRules: Math.max(0, items.length - 1),
+      };
+    }
+
+    if (state && state.credits !== null && state.credits !== undefined && state.credits >= 0) {
+      const used = Math.max(0, state.total_cost || 0);
+      const total = used + state.credits;
+      const usedPct = total > 0 ? Math.min(100, (used / total) * 100) : 0;
+      return {
+        label: `额度: $${used.toFixed(2)} / $${total.toFixed(2)}`,
+        usedPct,
+        hasCap: true,
+        extraRules: items.length,
+      };
+    }
+
+    const totalCost = state?.total_cost || 0;
+    return {
+      label: totalCost > 0 ? `累计: $${totalCost.toFixed(4)} · 无限额度` : '额度: 无限额度',
+      usedPct: 0,
+      hasCap: false,
+      extraRules: items.length,
+    };
   };
 
   const openKeyAnalytics = (keyObj: ApiKeyData) => {
@@ -1756,9 +1949,9 @@ export default function Admin() {
   const parentEffective = effectiveKeys[formParentId];
   const standardFields = new Set(['groups', 'model', 'ip_blacklist', 'preferences.quota', 'preferences.quota_rules', 'preferences.enabled_plugins', 'preferences.excluded_channels', 'preferences.excluded_models']);
   const extraFields = [...new Set([
-    ...Object.keys(parentEffective?.preferences || {}).filter(field => !['created_at', 'name', 'group', 'credits', 'rate_limit'].includes(field)).map(field => `preferences.${field}`),
+    ...Object.keys(parentEffective?.preferences || {}).filter(field => !['created_at', 'name', 'group', 'credits', 'rate_limit', 'remark'].includes(field)).map(field => `preferences.${field}`),
     ...overrideFields,
-  ])].filter(field => field.startsWith('preferences.') && !standardFields.has(field) && !['preferences.created_at', 'preferences.name', 'preferences.group', 'preferences.credits', 'preferences.rate_limit'].includes(field));
+  ])].filter(field => field.startsWith('preferences.') && !standardFields.has(field) && !['preferences.created_at', 'preferences.name', 'preferences.group', 'preferences.credits', 'preferences.rate_limit', 'preferences.remark'].includes(field));
   const isInherited = (field: string) => Boolean(formParentId) && !overrideFields.has(field);
   const initializeOverride = (field: string) => {
     const value = inheritedKeyValue(parentEffective, field);
@@ -1800,83 +1993,303 @@ export default function Admin() {
     value={inheritedKeyValue(parentEffective, field)} onOverride={() => initializeOverride(field)} onInherit={() => restoreInheritance(field)}
   >{children}</InheritedKeyField>;
 
+  const availableKeyGroups = useMemo(() => {
+    const s = new Set<string>();
+    keys.forEach(k => {
+      const gs = k.groups || (k.group ? [k.group] : ['default']);
+      gs.forEach(g => s.add(g));
+    });
+    return Array.from(s).sort();
+  }, [keys]);
+
+  const toggleSort = (field: Exclude<KeySortField, 'default'>) => {
+    if (sortField !== field) {
+      setSortField(field);
+      setSortDir(field === 'name' ? 'asc' : 'desc');
+    } else if (sortDir === (field === 'name' ? 'asc' : 'desc')) {
+      setSortDir(field === 'name' ? 'desc' : 'asc');
+    } else {
+      setSortField('default');
+    }
+  };
+
+  const renderSortIcon = (field: Exclude<KeySortField, 'default'>) => {
+    if (sortField !== field) return <ArrowUpDown className="w-3 h-3 opacity-45 group-hover/th:opacity-85 transition-opacity" />;
+    return sortDir === 'asc'
+      ? <ArrowUp className="w-3 h-3 text-primary" />
+      : <ArrowDown className="w-3 h-3 text-primary" />;
+  };
+
+  const hasActiveFilters = Boolean(searchQuery.trim() || filterGroup || filterStatus);
+
+  const visibleRows = useMemo(() => {
+    const kw = searchQuery.trim().toLowerCase();
+    const filtered = treeRows.filter(({ key: keyObj }) => {
+      const isEnabled = keyObj.enabled !== false && (keyStates[keyObj.api]?.enabled ?? true);
+      if (filterStatus === 'enabled' && !isEnabled) return false;
+      if (filterStatus === 'disabled' && isEnabled) return false;
+
+      const groups = keyObj.groups || (keyObj.group ? [keyObj.group] : ['default']);
+      if (filterGroup && !groups.includes(filterGroup)) return false;
+
+      if (kw) {
+        const name = (keyObj.name || keyObj.preferences?.name || '').toLowerCase();
+        const api = (keyObj.api || '').toLowerCase();
+        const role = (keyObj.role || 'user').toLowerCase();
+        const remark = String(keyObj.preferences?.remark || '').toLowerCase();
+        const models = (keyObj.model || []).join(' ').toLowerCase();
+        const grpStr = groups.join(' ').toLowerCase();
+        if (!name.includes(kw) && !api.includes(kw) && !role.includes(kw) && !remark.includes(kw) && !models.includes(kw) && !grpStr.includes(kw)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    if (sortField === 'default') return filtered;
+
+    const sorted = [...filtered].map(row => ({ ...row, depth: 0 }));
+    sorted.sort((a, b) => {
+      let cmp = 0;
+      if (sortField === 'name') {
+        const na = a.key.name || a.key.preferences?.name || '';
+        const nb = b.key.name || b.key.preferences?.name || '';
+        cmp = na.localeCompare(nb, 'zh-CN');
+      } else if (sortField === 'usage') {
+        const ua = keyUsageMap[sha256Hex16(a.key.api)]?.days30;
+        const ub = keyUsageMap[sha256Hex16(b.key.api)]?.days30;
+        const sa = (ua?.costUsd || 0) * 1_000_000 + (ua?.totalTokens || 0) / 1000 + (ua?.requests || 0);
+        const sb = (ub?.costUsd || 0) * 1_000_000 + (ub?.totalTokens || 0) / 1000 + (ub?.requests || 0);
+        cmp = sa - sb;
+      } else if (sortField === 'status') {
+        const ea = a.key.enabled !== false && (keyStates[a.key.api]?.enabled ?? true) ? 1 : 0;
+        const eb = b.key.enabled !== false && (keyStates[b.key.api]?.enabled ?? true) ? 1 : 0;
+        cmp = ea - eb;
+      } else if (sortField === 'created') {
+        const ta = new Date(keyStates[a.key.api]?.created_at || 0).getTime() || 0;
+        const tb = new Date(keyStates[b.key.api]?.created_at || 0).getTime() || 0;
+        cmp = ta - tb;
+      }
+      return sortDir === 'asc' ? cmp : -cmp;
+    });
+    return sorted;
+  }, [treeRows, searchQuery, filterGroup, filterStatus, sortField, sortDir, keyStates, keyUsageMap]);
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 font-sans">
+    <div className="space-y-5 font-sans">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">API 密钥管理</h1>
-          <p className="text-muted-foreground mt-1 text-sm sm:text-base">管理调用 Miora 网关的下游 API Key、额度与权限</p>
+          <p className="text-muted-foreground mt-1 text-sm sm:text-base">管理调用 Miora 网关的下游 API Key、用量额度与权限</p>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
-          <button onClick={fetchData} className="p-2 text-muted-foreground hover:text-foreground bg-card border border-border rounded-lg flex-shrink-0">
+          <button onClick={fetchData} className="p-2 text-muted-foreground hover:text-foreground bg-card border border-border rounded-lg flex-shrink-0 transition-colors" title="刷新密钥与用量状态">
             <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           </button>
           <button
             onClick={handleClearAllKeys}
             disabled={keys.length === 0}
-            className="px-3 py-2 text-sm font-medium bg-red-500/10 border border-red-500/30 text-red-600 dark:text-red-400 hover:bg-red-500/20 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none justify-center"
+            className="px-3 py-2 text-sm font-medium bg-destructive/10 border border-destructive/25 text-destructive hover:bg-destructive/15 rounded-lg flex items-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed flex-1 sm:flex-none justify-center transition-colors"
             title="一键清空全部 API Keys"
           >
             <Trash2 className="w-4 h-4" /> <span className="hidden sm:inline">清空全部</span><span className="sm:hidden">清空</span>
           </button>
-          <button onClick={() => openSheet()} className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg flex items-center gap-2 font-medium flex-1 sm:flex-none justify-center">
+          <button onClick={() => openSheet()} className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg flex items-center gap-2 font-medium flex-1 sm:flex-none justify-center transition-colors">
             <Plus className="w-4 h-4" /> <span className="hidden sm:inline">新增 API Key</span><span className="sm:hidden">新增</span>
           </button>
         </div>
       </div>
 
-      {/* Table */}
+      {/* Filter & Search Bar */}
+      {keys.length > 0 && (
+        <div className="grid grid-cols-2 items-center gap-2 lg:flex lg:flex-wrap">
+          <div className="relative col-span-2 min-w-0 lg:flex-1 lg:min-w-56">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground pointer-events-none" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              placeholder="搜索 Key 名称、前缀、备注、分组或模型…"
+              className="w-full bg-background border border-border rounded-lg pl-9 pr-8 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-primary outline-none"
+            />
+            {searchQuery && (
+              <button
+                type="button"
+                onClick={() => setSearchQuery('')}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          <select
+            value={filterGroup}
+            onChange={e => setFilterGroup(e.target.value)}
+            className="bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground min-w-[120px]"
+          >
+            <option value="">全部分组</option>
+            {availableKeyGroups.map(g => (
+              <option key={g} value={g}>{g}</option>
+            ))}
+          </select>
+
+          <select
+            value={filterStatus}
+            onChange={e => setFilterStatus(e.target.value as '' | 'enabled' | 'disabled')}
+            className="bg-background border border-border rounded-lg px-3 py-2 text-sm text-foreground min-w-[110px]"
+          >
+            <option value="">全部状态</option>
+            <option value="enabled">活跃 / 启用</option>
+            <option value="disabled">已停用</option>
+          </select>
+
+          {sortField !== 'default' && (
+            <button
+              type="button"
+              onClick={() => setSortField('default')}
+              className="flex items-center gap-1 px-3 py-2 text-xs font-medium text-primary bg-primary/10 hover:bg-primary/15 rounded-lg transition-colors flex-shrink-0"
+            >
+              <X className="w-3 h-3" /> 恢复树状顺序
+            </button>
+          )}
+
+          {hasActiveFilters && (
+            <button
+              type="button"
+              onClick={() => { setSearchQuery(''); setFilterGroup(''); setFilterStatus(''); }}
+              className="flex items-center gap-1 px-3 py-2 text-xs text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 rounded-lg transition-colors flex-shrink-0"
+            >
+              <X className="w-3 h-3" /> 清除筛选
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Mobile Card List */}
       <div className="md:hidden space-y-4">
         {loading && keys.length === 0 ? (
           <div className="p-8 text-center text-muted-foreground">加载密钥数据...</div>
-        ) : keys.length === 0 ? (
-          <div className="p-12 text-center text-muted-foreground">
-            <Key className="w-12 h-12 mb-3 opacity-50 mx-auto" />
-            <h3 className="text-lg font-medium text-foreground">暂无 API 密钥</h3>
-            <p className="text-sm mt-1 mb-4">创建您的第一个密钥以允许客户端接入</p>
-            <button onClick={() => openSheet()} className="text-primary hover:underline text-sm font-medium">+ 新增 API Key</button>
+        ) : visibleRows.length === 0 ? (
+          <div className="p-12 text-center text-muted-foreground bg-card border border-border rounded-xl">
+            <Key className="w-10 h-10 mb-3 opacity-40 mx-auto" />
+            <h3 className="text-base font-medium text-foreground">{keys.length === 0 ? '暂无 API 密钥' : '没有符合筛选条件的密钥'}</h3>
+            {keys.length === 0 && (
+              <button onClick={() => openSheet()} className="text-primary hover:underline text-sm font-medium mt-3 inline-block">+ 新增 API Key</button>
+            )}
           </div>
         ) : (
-          treeRows.map(({ key: keyObj, index: idx, depth, hasChildren }) => {
+          visibleRows.map(({ key: keyObj, index: idx, depth, hasChildren }) => {
             const status = getStatusInfo(keyObj.api);
             const quota = getQuotaInfo(keyObj.api);
+            const state = keyStates[keyObj.api];
+            const usage = keyUsageMap[sha256Hex16(keyObj.api)];
+            const quotaBar = buildQuotaSummaryBar(quota, state);
             const name = keyObj.name || keyObj.preferences?.name || '未命名密钥';
+            const remark = typeof keyObj.preferences?.remark === 'string' ? keyObj.preferences.remark.trim() : '';
             const groups = keyObj.groups || (keyObj.group ? [keyObj.group] : ['default']);
+            const isActive30d = (usage?.days30?.requests || 0) > 0;
             return (
-              <div key={keyObj.id || idx} style={{ marginLeft: Math.min(depth, 6) * 12 }} className="bg-card border border-border rounded-xl p-4">
-                <div className="flex items-start justify-between mb-2">
+              <div key={keyObj.id || idx} style={{ marginLeft: Math.min(depth, 6) * 12 }} className="bg-card border border-border rounded-xl p-4 space-y-3">
+                <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="font-medium text-foreground truncate">{renderTreeToggle(keyObj, hasChildren)}{name}</div>
-                    {keyObj.parent_id && <div className="text-xs text-muted-foreground">上级：{keys.find(key => key.id === keyObj.parent_id)?.name || '未命名'} · 受上级权限及额度限制</div>}
-                    <div className="text-xs text-muted-foreground font-mono mt-1 flex items-center gap-1.5">
-                      <Key className="w-3 h-3 flex-shrink-0" />
-                      {keyObj.api.slice(0, 7)}...{keyObj.api.slice(-4)}
-                      <button onClick={() => copyToClipboard(keyObj.api)} className="text-muted-foreground/60 hover:text-foreground"><Copy className="w-3 h-3" /></button>
+                    <div className="font-semibold text-foreground flex items-center gap-1.5 flex-wrap">
+                      {depth > 0 && <span className="text-muted-foreground/60 font-mono text-xs">└</span>}
+                      {sortField === 'default' && renderTreeToggle(keyObj, hasChildren)}
+                      <span className="break-words">{name}</span>
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${keyObj.role === 'admin' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20' : 'bg-muted text-muted-foreground'}`}>
+                        {keyObj.role || 'user'}
+                      </span>
                     </div>
+                    {keyObj.parent_id && <div className="text-xs text-muted-foreground mt-0.5">上级：{keys.find(key => key.id === keyObj.parent_id)?.name || '未命名'}</div>}
+                    {remark && (
+                      <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words leading-relaxed mt-1">
+                        {remark}
+                      </div>
+                    )}
                   </div>
                   {keyObj.enabled === false ? (
-                    <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium flex-shrink-0 bg-red-500/10 text-red-600 dark:text-red-500 border border-red-500/20"><PowerOff className="w-3.5 h-3.5" /> 已禁用</span>
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 bg-muted text-muted-foreground">已停用</span>
+                  ) : isActive30d && state?.enabled !== false ? (
+                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 bg-emerald-500/12 text-emerald-600 dark:text-emerald-400">活跃</span>
                   ) : (
-                    <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium flex-shrink-0 ${status.cls}`}>{status.icon} {status.label}</span>
+                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium flex-shrink-0 ${status.cls}`}>{status.label}</span>
                   )}
                 </div>
-                <div className="flex flex-wrap items-center gap-2 mb-3 text-xs">
-                  <span className={`px-2 py-0.5 rounded font-medium ${keyObj.role === 'admin' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400' : 'bg-muted text-muted-foreground'}`}>{keyObj.role || 'user'}</span>
-                  {groups.map(g => (<span key={g} className="flex items-center gap-1 bg-muted text-foreground px-1.5 py-0.5 rounded"><Folder className="w-3 h-3" />{g}</span>))}
-                  {quota.percent !== undefined && <QuotaArcs quotaInner={quota.percent} />}
-                  <span className="text-muted-foreground">{quota.text}</span>
+
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <button
+                    type="button"
+                    onClick={() => copyToClipboard(keyObj.api)}
+                    className="inline-flex items-center gap-1.5 font-mono text-xs bg-muted/80 hover:bg-muted border border-border/70 text-foreground px-2 py-0.5 rounded-md transition-colors"
+                    title="点击复制完整 API Key"
+                  >
+                    <span>{keyObj.api.slice(0, 7)}...{keyObj.api.slice(-4)}</span>
+                    <Copy className="w-3 h-3 text-muted-foreground" />
+                  </button>
+                  {groups.map(g => (
+                    <span key={g} className="flex items-center gap-1 bg-muted text-foreground px-1.5 py-0.5 rounded">
+                      <Folder className="w-3 h-3 text-muted-foreground" />{g}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="p-2.5 rounded-lg bg-muted/35 border border-border/60 space-y-1.5 text-xs font-mono tabular-nums">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">今日: <strong className="text-foreground font-semibold">{formatKeyPeriodLine(usage?.today)}</strong></span>
+                    <span className="text-muted-foreground">近30天: <strong className="text-foreground font-semibold">{formatKeyPeriodLine(usage?.days30)}</strong></span>
+                  </div>
+                  <div className="text-muted-foreground">{quotaBar.label}</div>
+                  <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                    <div
+                      className={`h-full rounded-full ${
+                        !quotaBar.hasCap
+                          ? isActive30d ? 'bg-emerald-500/65' : 'bg-transparent'
+                          : quotaBar.usedPct >= 95
+                          ? 'bg-destructive'
+                          : quotaBar.usedPct >= 80
+                          ? 'bg-amber-500'
+                          : 'bg-emerald-500'
+                      }`}
+                      style={{ width: quotaBar.hasCap ? `${Math.max(3, quotaBar.usedPct)}%` : isActive30d ? '100%' : '0%' }}
+                    />
+                  </div>
                 </div>
                 <div className="flex items-center justify-end gap-1 pt-3 border-t border-border">
-                  <button onClick={() => openCreditsDialog(keyObj.api)} className="p-1.5 text-emerald-600 dark:text-emerald-500 hover:bg-emerald-500/10 rounded-md" title="充值"><Wallet className="w-4 h-4" /></button>
-                  <button onClick={() => openKeyAnalytics(keyObj)} className="p-1.5 text-primary hover:bg-primary/10 rounded-md" title="用量分析"><BarChart3 className="w-4 h-4" /></button>
-                  <button onClick={() => setBranchUsageKey(keyObj)} className="p-1.5 text-muted-foreground hover:bg-muted rounded-md" title="直接与下级用量汇总"><BarChart3 className="w-4 h-4" /></button>
-                  <button onClick={() => openSheet(null, null, keyObj.id)} disabled={!keyObj.id} className="p-1.5 text-primary hover:bg-muted rounded-md" title="创建子 Key"><Plus className="w-4 h-4" /></button>
-                  <button onClick={() => openSheet(null, keyObj)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md" title="复制"><Copy className="w-4 h-4" /></button>
-                  <button onClick={() => handleToggleEnabled(idx)} className={`p-1.5 rounded-md ${keyObj.enabled === false ? 'text-emerald-600 dark:text-emerald-500 hover:bg-emerald-500/10' : 'text-amber-600 dark:text-amber-500 hover:bg-amber-500/10'}`} title={keyObj.enabled === false ? '启用' : '禁用'}>{keyObj.enabled === false ? <Power className="w-4 h-4" /> : <PowerOff className="w-4 h-4" />}</button>
-                  <button onClick={() => openSheet(idx)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md" title="编辑"><Edit className="w-4 h-4" /></button>
-                  <button onClick={() => handleDelete(idx)} className="p-1.5 text-red-600 dark:text-red-500 hover:bg-red-500/10 rounded-md" title="删除"><Trash2 className="w-4 h-4" /></button>
+                  <button onClick={() => openKeyAnalytics(keyObj)} className="px-2 py-1 text-xs font-medium text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-colors inline-flex items-center gap-1" title="用量分析"><BarChart3 className="w-3.5 h-3.5" /> 分析</button>
+                  <button onClick={() => openSheet(idx)} className="px-2 py-1 text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors inline-flex items-center gap-1" title="编辑"><Edit className="w-3.5 h-3.5" /> 编辑</button>
+                  <DropdownMenu.Root>
+                    <DropdownMenu.Trigger asChild>
+                      <button type="button" className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors" aria-label="更多密钥操作">
+                        <MoreHorizontal className="w-4 h-4" />
+                      </button>
+                    </DropdownMenu.Trigger>
+                    <DropdownMenu.Portal>
+                      <DropdownMenu.Content align="end" sideOffset={4} className="min-w-[168px] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg p-1 z-50 text-xs">
+                        <DropdownMenu.Item onSelect={() => openCreditsDialog(keyObj.api)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted">
+                          <Wallet className="w-3.5 h-3.5 text-emerald-500" /> 充值额度
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item onSelect={() => setBranchUsageKey(keyObj)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted">
+                          <GitFork className="w-3.5 h-3.5 text-muted-foreground" /> 直接与下级用量汇总
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item disabled={!keyObj.id} onSelect={() => { if (keyObj.id) openSheet(null, null, keyObj.id); }} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted data-[disabled]:opacity-40 data-[disabled]:pointer-events-none">
+                          <Plus className="w-3.5 h-3.5 text-muted-foreground" /> 创建子 Key
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item onSelect={() => openSheet(null, keyObj)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted">
+                          <Copy className="w-3.5 h-3.5 text-muted-foreground" /> 复制配置
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Item onSelect={() => handleToggleEnabled(idx)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted">
+                          {keyObj.enabled === false ? <Power className="w-3.5 h-3.5 text-emerald-500" /> : <PowerOff className="w-3.5 h-3.5 text-amber-500" />}
+                          {keyObj.enabled === false ? '启用密钥' : '禁用密钥'}
+                        </DropdownMenu.Item>
+                        <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                        <DropdownMenu.Item onSelect={() => handleDelete(idx)} className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none text-destructive hover:bg-destructive/10">
+                          <Trash2 className="w-3.5 h-3.5" /> 删除密钥
+                        </DropdownMenu.Item>
+                      </DropdownMenu.Content>
+                    </DropdownMenu.Portal>
+                  </DropdownMenu.Root>
                 </div>
               </div>
             );
@@ -1891,31 +2304,54 @@ export default function Admin() {
             <RefreshCw className="w-8 h-8 animate-spin mb-3" />
             <p>加载密钥数据...</p>
           </div>
-        ) : keys.length === 0 ? (
+        ) : visibleRows.length === 0 ? (
           <div className="p-16 flex flex-col items-center justify-center text-muted-foreground">
             <Key className="w-12 h-12 mb-3 opacity-50" />
-            <h3 className="text-lg font-medium text-foreground">暂无 API 密钥</h3>
-            <p className="text-sm mt-1 mb-4">创建您的第一个密钥以允许客户端接入</p>
-            <button onClick={() => openSheet()} className="text-primary hover:underline text-sm font-medium">+ 新增 API Key</button>
+            <h3 className="text-lg font-medium text-foreground">{keys.length === 0 ? '暂无 API 密钥' : '没有符合筛选条件的密钥'}</h3>
+            <p className="text-sm mt-1 mb-4">{keys.length === 0 ? '创建您的第一个密钥以允许客户端接入' : '请尝试调整搜索词或筛选条件'}</p>
+            {keys.length === 0 && (
+              <button onClick={() => openSheet()} className="text-primary hover:underline text-sm font-medium">+ 新增 API Key</button>
+            )}
           </div>
         ) : (
-          <table className="w-full text-left border-collapse">
-            <thead className="bg-muted border-b border-border text-muted-foreground text-sm font-medium">
+          <table className="w-full text-left border-collapse table-fixed">
+            <thead className="bg-muted/60 border-b border-border text-muted-foreground text-xs uppercase tracking-wider font-semibold select-none">
               <tr>
-                <th className="px-6 py-4">名称 / Key</th>
-                <th className="px-6 py-4">角色</th>
-                <th className="px-6 py-4 text-center">配额状态</th>
-                <th className="px-6 py-4">模型规则</th>
-                <th className="px-6 py-4 text-center">状态</th>
-                <th className="px-6 py-4 text-right">操作</th>
+                <th className="px-4 py-3.5 w-[21%]">
+                  <button type="button" onClick={() => toggleSort('name')} className="group/th inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    名称 / 角色 {renderSortIcon('name')}
+                  </button>
+                </th>
+                <th className="px-4 py-3.5 w-[14%]">API 密钥</th>
+                <th className="px-4 py-3.5 w-[16%]">分组 / 模型</th>
+                <th className="px-4 py-3.5 w-[21%]">
+                  <button type="button" onClick={() => toggleSort('usage')} className="group/th inline-flex items-center gap-1 hover:text-foreground transition-colors" title="按近 30 天用量消耗排序">
+                    用量与额度 {renderSortIcon('usage')}
+                  </button>
+                </th>
+                <th className="px-4 py-3.5 w-[8%] text-center">
+                  <button type="button" onClick={() => toggleSort('status')} className="group/th inline-flex items-center justify-center gap-1 hover:text-foreground transition-colors">
+                    状态 {renderSortIcon('status')}
+                  </button>
+                </th>
+                <th className="px-4 py-3.5 w-[11%]">
+                  <button type="button" onClick={() => toggleSort('created')} className="group/th inline-flex items-center gap-1 hover:text-foreground transition-colors">
+                    创建时间 {renderSortIcon('created')}
+                  </button>
+                </th>
+                <th className="px-4 py-3.5 w-[9%] text-right">操作</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border text-sm">
-              {treeRows.map(({ key: keyObj, index: idx, depth, hasChildren }) => {
+              {visibleRows.map(({ key: keyObj, index: idx, depth, hasChildren }) => {
                 const status = getStatusInfo(keyObj.api);
                 const quota = getQuotaInfo(keyObj.api);
                 const state = keyStates[keyObj.api];
+                const usage = keyUsageMap[sha256Hex16(keyObj.api)];
+                const quotaBar = buildQuotaSummaryBar(quota, state);
+                const isActive30d = (usage?.days30?.requests || 0) > 0;
                 const name = keyObj.name || keyObj.preferences?.name || '未命名密钥';
+                const remark = typeof keyObj.preferences?.remark === 'string' ? keyObj.preferences.remark.trim() : '';
                 const groups = keyObj.groups || (keyObj.group ? [keyObj.group] : ['default']);
                 const models = keyObj.model || [];
                 const modelText = models.length === 0 ? '默认: all' :
@@ -1923,98 +2359,221 @@ export default function Admin() {
                     models.length > 3 ? `${models.slice(0, 3).join(', ')} 等 ${models.length} 条` : models.join(', ');
 
                 return (
-                  <tr key={idx} className="hover:bg-muted/50 transition-colors group">
-                    <td className="px-6 py-4" style={{ paddingLeft: 24 + Math.min(depth, 10) * 16 }}>
-                      <div className="font-medium text-foreground">{renderTreeToggle(keyObj, hasChildren)}{name}</div>
-                      {keyObj.parent_id && <div className="text-xs text-muted-foreground">上级：{keys.find(key => key.id === keyObj.parent_id)?.name || '未命名'} · 受上级权限及额度限制</div>}
-                      <div className="text-xs text-muted-foreground font-mono mt-1 flex items-center gap-1.5">
-                        <Key className="w-3 h-3" />
-                        {keyObj.api.slice(0, 7)}...{keyObj.api.slice(-4)}
-                        <button onClick={() => copyToClipboard(keyObj.api)} className="text-muted-foreground/60 hover:text-foreground">
-                          <Copy className="w-3 h-3" />
+                  <tr key={keyObj.id || idx} className={`hover:bg-muted/40 transition-colors group ${keyObj.enabled === false ? 'opacity-65 bg-muted/20' : ''}`}>
+                    {/* 1. 名称 / 角色 / 备注（支持完整换行） */}
+                    <td className="px-4 py-3.5 align-top" style={{ paddingLeft: 16 + Math.min(depth, 8) * 14 }}>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {depth > 0 && <span className="text-muted-foreground/60 font-mono text-xs">└</span>}
+                        {sortField === 'default' && renderTreeToggle(keyObj, hasChildren)}
+                        <span className="font-semibold text-foreground break-words">{name}</span>
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                          keyObj.role === 'admin'
+                            ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20'
+                            : 'bg-muted text-muted-foreground'
+                        }`}>
+                          {keyObj.role || 'user'}
+                        </span>
+                      </div>
+                      {keyObj.parent_id && (
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          上级：{keys.find(key => key.id === keyObj.parent_id)?.name || '未命名'}
+                        </div>
+                      )}
+                      {remark && (
+                        <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words leading-relaxed mt-1">
+                          {remark}
+                        </div>
+                      )}
+                    </td>
+
+                    {/* 2. API 密钥（独立等宽胶囊 + 一键复制） */}
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="inline-flex items-center gap-1.5">
+                        <span className="font-mono text-xs bg-muted/80 border border-border/70 text-foreground/90 px-2 py-1 rounded-md select-all">
+                          {keyObj.api.length > 13 ? `${keyObj.api.slice(0, 7)}...${keyObj.api.slice(-4)}` : keyObj.api}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(keyObj.api)}
+                          className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                          title="复制完整 API Key"
+                        >
+                          <Copy className="w-3.5 h-3.5" />
                         </button>
                       </div>
-                      {state?.created_at && (
-                        <div className="text-xs text-muted-foreground/60 mt-1">创建: {state.created_at}</div>
-                      )}
-                      {keyObj.preferences?.rate_limit && (
-                        <div className="text-[10px] text-muted-foreground/50 mt-0.5">限流: {typeof keyObj.preferences.rate_limit === 'object'
-                          ? `${(keyObj.preferences.rate_limit as any).default || '无全局'} + ${Object.keys(keyObj.preferences.rate_limit).filter(k => k !== 'default').length} 条模型规则`
-                          : keyObj.preferences.rate_limit}</div>
-                      )}
                     </td>
-                    <td className="px-6 py-4">
-                      <span className={`px-2 py-1 rounded text-xs font-medium ${keyObj.role === 'admin' ? 'bg-purple-500/10 text-purple-600 dark:text-purple-400 border border-purple-500/20' : 'bg-muted text-muted-foreground'}`}>
-                        {keyObj.role || 'user'}
-                      </span>
-                    </td>
-                    <td className="px-6 py-4 text-center">
-                      {/* 修改原因：quota_states 已按 scope 输出，桌面列表需要展示 Key 级、Per-IP 等分组，而不是只显示扁平维度名。 */}
-                      {/* 修改方式：主行展示最低剩余额度摘要，明细按 scope 分组显示前两个分组和每组前两个 metric。 */}
-                      {/* 目的：保持表格紧凑，同时让管理员能区分 Key 级配额和 Per-IP 配额。 */}
-                      <div className="flex items-center justify-center gap-2 max-w-[200px]">
-                        {quota.percent !== undefined && (
-                          <QuotaArcs quotaInner={quota.percent} />
-                        )}
-                        <div className="min-w-0 flex-1">
-                          <div className="text-foreground font-mono text-sm truncate">{quota.text}</div>
-                          {quota.groups.length > 0 && (
-                            <div className="text-[10px] text-muted-foreground mt-0.5 space-y-0.5 text-left">
-                              {quota.groups.slice(0, 2).map((group) => (
-                                <div key={group.label} className="truncate">
-                                  <span className="text-foreground/70">{group.label}</span>: {group.items.slice(0, 2).map(item => `${item.label} ${Math.round(item.current)}/${Math.round(item.limit)}`).join(' · ')}
-                                </div>
-                              ))}
-                              {quota.groups.length > 2 && <div>+{quota.groups.length - 2} 组更多</div>}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </td>
-                    <td className="px-6 py-4 max-w-[200px]">
-                      <div className="text-xs text-muted-foreground truncate mb-1" title={models.join(', ')}>{modelText}</div>
-                      <div className="flex flex-wrap gap-1">
+
+                    {/* 3. 分组 / 模型 */}
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="flex flex-wrap gap-1 mb-1.5">
                         {groups.map(g => (
-                          <span key={g} className="flex items-center gap-1 text-[11px] bg-muted text-foreground px-1.5 py-0.5 rounded">
-                            <Folder className="w-3 h-3" />{g}
+                          <span key={g} className="inline-flex items-center gap-1 text-xs bg-muted text-foreground px-1.5 py-0.5 rounded">
+                            <Folder className="w-3 h-3 text-muted-foreground" />{g}
                           </span>
                         ))}
                       </div>
+                      <div className="text-xs text-muted-foreground truncate" title={models.join(', ')}>
+                        {modelText}
+                      </div>
                     </td>
-                    <td className="px-6 py-4 text-center">
-                      {/* 配置级禁用优先于余额/配额运行状态展示 */}
+
+                    {/* 4. 用量与额度（今日 / 近30天 / 已用总额度 + 水平进度条） */}
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="space-y-1 max-w-[210px] text-xs font-mono tabular-nums">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-muted-foreground font-sans text-[11px]">今日:</span>
+                          <span className="text-foreground font-semibold">{formatKeyPeriodLine(usage?.today)}</span>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-muted-foreground font-sans text-[11px]">近30天:</span>
+                          <span className="text-foreground">{formatKeyPeriodLine(usage?.days30)}</span>
+                        </div>
+                        <div className="text-[11px] text-muted-foreground truncate" title={quotaBar.label}>
+                          {quotaBar.label}
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all ${
+                              !quotaBar.hasCap
+                                ? isActive30d ? 'bg-emerald-500/65' : 'bg-transparent'
+                                : quotaBar.usedPct >= 95
+                                ? 'bg-destructive'
+                                : quotaBar.usedPct >= 80
+                                ? 'bg-amber-500'
+                                : 'bg-emerald-500'
+                            }`}
+                            style={{ width: quotaBar.hasCap ? `${Math.max(3, quotaBar.usedPct)}%` : isActive30d ? '100%' : '0%' }}
+                          />
+                        </div>
+                        {quota.groups.length > 0 && quotaBar.extraRules > 0 && (
+                          <div
+                            className="text-[10px] font-sans text-muted-foreground/75 truncate"
+                            title={quota.groups.map(g => `${g.label}: ${g.items.map(i => `${i.label} ${Math.round(i.current)}/${Math.round(i.limit)}`).join(' · ')}`).join('\n')}
+                          >
+                            另含 {quotaBar.extraRules} 项细分限额规则
+                          </div>
+                        )}
+                      </div>
+                    </td>
+
+                    {/* 5. 状态 */}
+                    <td className="px-4 py-3.5 text-center align-middle">
                       {keyObj.enabled === false ? (
-                        <span className="inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium bg-red-500/10 text-red-600 dark:text-red-500 border border-red-500/20">
-                          <PowerOff className="w-3.5 h-3.5" /> 已禁用
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-muted text-muted-foreground border border-border">
+                          已停用
+                        </span>
+                      ) : isActive30d && state?.enabled !== false ? (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                          活跃
                         </span>
                       ) : (
-                        <span className={`inline-flex items-center gap-1.5 px-2 py-1 rounded-full text-xs font-medium ${status.cls}`}>
-                          {status.icon} {status.label}
+                        <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium ${status.cls}`}>
+                          {status.label}
                         </span>
                       )}
                     </td>
-                    <td className="px-6 py-4 text-right">
-                      <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                        <button onClick={() => openCreditsDialog(keyObj.api)} className="p-1.5 text-emerald-600 dark:text-emerald-500 hover:bg-emerald-500/10 rounded-md" title="充值额度">
-                          <Wallet className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => setBranchUsageKey(keyObj)} className="p-1.5 text-muted-foreground hover:bg-muted rounded-md" title="直接与下级用量汇总"><BarChart3 className="w-4 h-4" /></button>
-                        <button onClick={() => openKeyAnalytics(keyObj)} className="p-1.5 text-primary hover:bg-primary/10 rounded-md" title="用量分析">
+
+                    {/* 6. 创建时间 */}
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="text-xs font-mono tabular-nums text-muted-foreground leading-snug">
+                        {formatKeyDateTime(state?.created_at || keyObj.preferences?.created_at)}
+                      </div>
+                      {usage?.days30?.lastUsed && (
+                        <div className="text-[10px] text-muted-foreground/65 mt-0.5 truncate" title={`最近调用: ${usage.days30.lastUsed}`}>
+                          近调: {formatKeyDateTime(usage.days30.lastUsed).slice(5, 16)}
+                        </div>
+                      )}
+                    </td>
+
+                    {/* 7. 操作 */}
+                    <td className="px-4 py-3.5 text-right align-middle">
+                      <div className="flex items-center justify-end gap-0.5">
+                        <button
+                          type="button"
+                          onClick={() => openKeyAnalytics(keyObj)}
+                          className="p-1.5 text-muted-foreground hover:text-primary hover:bg-primary/10 rounded-md transition-colors"
+                          title="用量分析"
+                        >
                           <BarChart3 className="w-4 h-4" />
                         </button>
-                        <button onClick={() => openSheet(null, null, keyObj.id)} disabled={!keyObj.id} className="p-1.5 text-primary hover:bg-muted rounded-md" title="创建子 Key"><Plus className="w-4 h-4" /></button>
-                        <button onClick={() => openSheet(null, keyObj)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md" title="复制配置">
-                          <Copy className="w-4 h-4" />
-                        </button>
-                        <button onClick={() => handleToggleEnabled(idx)} className={`p-1.5 rounded-md ${keyObj.enabled === false ? 'text-emerald-600 dark:text-emerald-500 hover:bg-emerald-500/10' : 'text-amber-600 dark:text-amber-500 hover:bg-amber-500/10'}`} title={keyObj.enabled === false ? '启用' : '禁用'}>
-                          {keyObj.enabled === false ? <Power className="w-4 h-4" /> : <PowerOff className="w-4 h-4" />}
-                        </button>
-                        <button onClick={() => openSheet(idx)} className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md" title="编辑">
+                        <button
+                          type="button"
+                          onClick={() => openSheet(idx)}
+                          className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                          title="编辑密钥"
+                        >
                           <Edit className="w-4 h-4" />
                         </button>
-                        <button onClick={() => handleDelete(idx)} className="p-1.5 text-red-600 dark:text-red-500 hover:bg-red-500/10 rounded-md" title="删除">
-                          <Trash2 className="w-4 h-4" />
-                        </button>
+                        <DropdownMenu.Root>
+                          <DropdownMenu.Trigger asChild>
+                            <button
+                              type="button"
+                              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted rounded-md transition-colors"
+                              title="更多密钥操作"
+                              aria-label={`密钥 ${name} 更多操作`}
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                          </DropdownMenu.Trigger>
+                          <DropdownMenu.Portal>
+                            <DropdownMenu.Content
+                              align="end"
+                              sideOffset={4}
+                              className="min-w-[172px] bg-popover text-popover-foreground border border-border rounded-lg shadow-lg p-1 z-50 text-xs"
+                            >
+                              <DropdownMenu.Item
+                                onSelect={() => openCreditsDialog(keyObj.api)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted"
+                              >
+                                <Wallet className="w-3.5 h-3.5 text-emerald-500" />
+                                充值额度
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                onSelect={() => setBranchUsageKey(keyObj)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted"
+                              >
+                                <GitFork className="w-3.5 h-3.5 text-muted-foreground" />
+                                直接与下级用量汇总
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                disabled={!keyObj.id}
+                                onSelect={() => {
+                                  if (keyObj.id) openSheet(null, null, keyObj.id);
+                                }}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted data-[disabled]:opacity-40 data-[disabled]:pointer-events-none"
+                              >
+                                <Plus className="w-3.5 h-3.5 text-muted-foreground" />
+                                创建子 Key
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                onSelect={() => openSheet(null, keyObj)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted"
+                              >
+                                <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+                                复制配置
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Item
+                                onSelect={() => handleToggleEnabled(idx)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none hover:bg-muted"
+                              >
+                                {keyObj.enabled === false ? (
+                                  <Power className="w-3.5 h-3.5 text-emerald-500" />
+                                ) : (
+                                  <PowerOff className="w-3.5 h-3.5 text-amber-500" />
+                                )}
+                                {keyObj.enabled === false ? '启用密钥' : '禁用密钥'}
+                              </DropdownMenu.Item>
+                              <DropdownMenu.Separator className="my-1 h-px bg-border" />
+                              <DropdownMenu.Item
+                                onSelect={() => handleDelete(idx)}
+                                className="flex items-center gap-2 px-2.5 py-1.5 rounded-md cursor-pointer outline-none text-destructive hover:bg-destructive/10"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                                删除密钥
+                              </DropdownMenu.Item>
+                            </DropdownMenu.Content>
+                          </DropdownMenu.Portal>
+                        </DropdownMenu.Root>
                       </div>
                     </td>
                   </tr>
@@ -2081,6 +2640,17 @@ export default function Admin() {
                     className="w-full bg-background border border-border focus:border-primary px-3 py-2 rounded-lg text-sm text-foreground"
                   />
                   <p className="text-xs text-muted-foreground mt-1">包含 'admin' 的 Key 将被视为管理 Key</p>
+                </div>
+
+                <div>
+                  <label className="text-sm font-medium text-foreground mb-1.5 block">备注描述</label>
+                  <textarea
+                    value={formRemark}
+                    onChange={e => setFormRemark(e.target.value)}
+                    placeholder="可选：填写分发对象、用途说明或到期约定（支持多行换行展示）"
+                    rows={2}
+                    className="w-full bg-background border border-border focus:border-primary px-3 py-2 rounded-lg text-sm text-foreground resize-y outline-none"
+                  />
                 </div>
 
                 <div className="border-t border-border pt-3">
