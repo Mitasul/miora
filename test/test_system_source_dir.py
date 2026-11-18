@@ -77,3 +77,10 @@ def test_update_git_syncs_to_configured_prod_dir(monkeypatch, tmp_path):
     synced, _ = _run_update_git(monkeypatch, source)
 
     assert synced == [(str(source), str(prod))]
+
+
+def test_default_update_source_tracks_miora_without_pypi():
+    assert system.GITHUB_REPO == os.getenv("GITHUB_REPO", "Mitasul/miora")
+    if "PYPI_PACKAGE" not in os.environ:
+        assert system.PYPI_PACKAGE == ""
+

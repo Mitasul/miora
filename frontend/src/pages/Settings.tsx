@@ -68,8 +68,20 @@ const DEFAULT_CLEANUP_FIELDS = LOG_CLEANUP_FIELD_OPTIONS
   .filter(item => item.key !== 'text')
   .map(item => item.key);
 
+type SettingsTab = 'routing' | 'pricing' | 'security' | 'storage' | 'all';
+
+const SETTINGS_TABS: { id: SettingsTab; label: string }[] = [
+  { id: 'routing', label: '路由与请求头' },
+  { id: 'pricing', label: '计费与超时' },
+  { id: 'security', label: '安全与限流' },
+  { id: 'storage', label: '日志与维护' },
+  { id: 'all', label: '全部展开' },
+];
+
 export default function Settings() {
   const { token } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<SettingsTab>('routing');
+  const [isDirty, setIsDirty] = useState(false);
   const [preferences, setPreferences] = useState<Preferences>({});
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -135,6 +147,7 @@ export default function Settings() {
             : typeof rawBl === 'string' ? rawBl.trim()
             : ''
           );
+          setIsDirty(false);
         }
       } catch (err) {
         console.error('Failed to load settings:', err);
@@ -147,6 +160,7 @@ export default function Settings() {
 
   const updatePreference = <K extends keyof Preferences>(key: K, value: Preferences[K]) => {
     setPreferences(prev => ({ ...prev, [key]: value }));
+    setIsDirty(true);
   };
 
   const parseErrorMessage = async (res: Response) => {
@@ -340,6 +354,7 @@ export default function Settings() {
         body: JSON.stringify({ preferences: cleanedPreferences, ip_blacklist: ipEntries })
       });
       if (res.ok) {
+        setIsDirty(false);
         toastSuccess('配置已保存成功');
       } else {
         const msg = await parseErrorMessage(res);
@@ -361,43 +376,78 @@ export default function Settings() {
     );
   }
 
+  const showRouting = activeTab === 'routing' || activeTab === 'all';
+  const showPricing = activeTab === 'pricing' || activeTab === 'all';
+  const showSecurity = activeTab === 'security' || activeTab === 'all';
+  const showStorage = activeTab === 'storage' || activeTab === 'all';
+
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 font-sans max-w-4xl mx-auto pb-12">
-      {/* Header */}
-      <div className="flex justify-between items-center border-b border-border pb-6">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-foreground">系统设置</h1>
-          <p className="text-muted-foreground mt-1">管理全局配置和系统首选项</p>
+    <div className="space-y-6 font-sans max-w-4xl mx-auto pb-12">
+      {/* Sticky Header + Category Tabs */}
+      <div className="sticky -top-2.5 sm:-top-4 md:-top-7 z-20 bg-background/95 pt-1 pb-3 border-b border-border space-y-3">
+        <div className="flex flex-wrap justify-between items-center gap-3">
+          <div>
+            <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-foreground">系统设置</h1>
+            <p className="text-xs sm:text-sm text-muted-foreground mt-0.5">管理网关路由调度、计费超时、访问安全与日志生命周期</p>
+          </div>
+          <div className="flex items-center gap-2.5">
+            {isDirty && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-amber-600 dark:text-amber-400 font-medium">
+                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+                有未保存修改
+              </span>
+            )}
+            <button
+              onClick={handleSave}
+              disabled={saving || !timeoutsValid}
+              className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg flex items-center gap-2 text-sm font-medium transition-colors disabled:opacity-50"
+            >
+              {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+              保存配置
+            </button>
+          </div>
         </div>
-        <button
-          onClick={handleSave}
-          disabled={saving || !timeoutsValid}
-          className="bg-primary hover:bg-primary/90 text-primary-foreground px-4 py-2 rounded-lg flex items-center gap-2 font-medium transition-colors disabled:opacity-50"
-        >
-          {saving ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-          保存配置
-        </button>
+
+        {/* Category Tabs */}
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar bg-muted/60 p-1 rounded-lg border border-border/60 w-fit max-w-full">
+          {SETTINGS_TABS.map(tab => {
+            const active = activeTab === tab.id;
+            return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => setActiveTab(tab.id)}
+                className={`px-3 py-1.5 rounded-md text-xs font-medium whitespace-nowrap transition-colors ${
+                  active
+                    ? 'bg-card text-foreground font-semibold shadow-sm border border-border/80'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {tab.label}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
-      <div className="space-y-8">
+      <div className="space-y-6">
         {/* 高可用性设置 */}
+        {showRouting && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2 font-medium text-foreground">
-            <Zap className="w-5 h-5 text-amber-500" /> 高可用性与调度
+            <Zap className="w-4 h-4 text-amber-500" /> 高可用性与调度
           </div>
           <div className="p-6 space-y-6">
-            <div className="grid grid-cols-2 gap-6">
+            <div>
               {/* max_retry_count 已废弃 — 重试终止靠 key_rules 冷却 + is_all_rate_limited 兜底 */}
-              <div>
-                <label className="text-sm font-medium text-foreground mb-1.5 block">渠道冷却时间 (秒)</label>
-                <input
-                  type="number" min="0"
-                  value={preferences.cooldown_period ?? 3}
-                  onChange={e => updatePreference('cooldown_period', parseInt(e.target.value))}
-                  className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground"
-                />
-                <p className="text-xs text-muted-foreground mt-1">失败渠道的冷却时间，设为 0 禁用</p>
-              </div>
+              <label className="text-sm font-medium text-foreground mb-1.5 block">渠道冷却时间 (秒)</label>
+              <input
+                type="number" min="0"
+                value={preferences.cooldown_period ?? 3}
+                onChange={e => updatePreference('cooldown_period', parseInt(e.target.value))}
+                className="w-full max-w-[200px] bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono tabular-nums text-foreground focus:border-primary outline-none"
+              />
+              <p className="text-xs text-muted-foreground mt-1">失败渠道的冷却时间，设为 0 禁用</p>
             </div>
 
             <div>
@@ -405,7 +455,7 @@ export default function Settings() {
               <select
                 value={preferences.SCHEDULING_ALGORITHM || 'fixed_priority'}
                 onChange={e => updatePreference('SCHEDULING_ALGORITHM', e.target.value)}
-                className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground"
+                className="w-full max-w-lg bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground focus:border-primary outline-none"
               >
                 <option value="fixed_priority">固定优先级 (fixed_priority) - 始终使用第一个可用渠道</option>
                 <option value="round_robin">轮询 (round_robin) - 按顺序依次请求</option>
@@ -417,11 +467,13 @@ export default function Settings() {
             </div>
           </div>
         </section>
+        )}
 
         {/* 速率限制 */}
+        {showSecurity && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2 font-medium text-foreground">
-            <Shield className="w-5 h-5 text-emerald-500" /> 安全与速率限制
+            <Shield className="w-4 h-4 text-emerald-500" /> 安全与速率限制
           </div>
           <div className="p-6">
             <label className="text-sm font-medium text-foreground mb-1.5 block">全局速率限制</label>
@@ -430,21 +482,26 @@ export default function Settings() {
               value={preferences.rate_limit || '999999/min'}
               onChange={e => updatePreference('rate_limit', e.target.value)}
               placeholder="100/hour,1000/day"
-              className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono text-foreground"
+              className="w-full max-w-md bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
             />
             <p className="text-xs text-muted-foreground mt-2">支持组合：例如 "15/min,100/hour,1000/day"</p>
           </div>
         </section>
+        )}
 
         {/* 上游请求标识与自定义请求头 */}
+        {showRouting && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center justify-between">
             <div className="flex items-center gap-2 font-medium text-foreground">
-              <Globe className="w-5 h-5 text-indigo-500" /> 上游请求标识与全局自定义请求头
+              <Globe className="w-4 h-4 text-indigo-500" /> 上游请求标识与全局自定义请求头
             </div>
             <button
               type="button"
-              onClick={() => setCustomHeadersList(prev => [...prev, { key: '', value: '' }])}
+              onClick={() => {
+                setCustomHeadersList(prev => [...prev, { key: '', value: '' }]);
+                setIsDirty(true);
+              }}
               className="text-xs flex items-center gap-1 bg-primary hover:bg-primary/90 text-primary-foreground px-2.5 py-1.5 rounded-md transition-colors"
             >
               <Plus className="w-3.5 h-3.5" /> 添加请求头
@@ -458,7 +515,7 @@ export default function Settings() {
                 value={preferences.user_agent ?? ''}
                 onChange={e => updatePreference('user_agent', e.target.value)}
                 placeholder="Miora（留空默认使用 Miora）"
-                className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
+                className="w-full max-w-md bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
               />
               <p className="text-xs text-muted-foreground mt-1.5">
                 向上游发送请求时携带的客户端标识。留空默认发送 <code className="bg-muted px-1 py-0.5 rounded text-foreground">Miora</code>；填写任意自定义值将全局覆盖（填写 <code className="bg-muted px-1 py-0.5 rounded text-foreground">null</code> 可移除 User-Agent）。单渠道可在渠道高级设置中单独覆盖。
@@ -489,6 +546,7 @@ export default function Settings() {
                           const next = [...customHeadersList];
                           next[idx] = { ...next[idx], key: e.target.value };
                           setCustomHeadersList(next);
+                          setIsDirty(true);
                         }}
                         placeholder="X-Title / HTTP-Referer / X-Custom"
                         className="bg-background border border-border px-3 py-1.5 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
@@ -500,6 +558,7 @@ export default function Settings() {
                           const next = [...customHeadersList];
                           next[idx] = { ...next[idx], value: e.target.value };
                           setCustomHeadersList(next);
+                          setIsDirty(true);
                         }}
                         placeholder="Miora"
                         className="bg-background border border-border px-3 py-1.5 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
@@ -510,6 +569,7 @@ export default function Settings() {
                           const next = [...customHeadersList];
                           next.splice(idx, 1);
                           setCustomHeadersList(next);
+                          setIsDirty(true);
                         }}
                         className="p-1 text-muted-foreground hover:text-destructive transition-colors"
                       >
@@ -525,12 +585,14 @@ export default function Settings() {
             </div>
           </div>
         </section>
+        )}
 
         {/* 费用计算 */}
+        {showPricing && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center justify-between">
             <div className="flex items-center gap-2 font-medium text-foreground">
-              <DollarSign className="w-5 h-5 text-emerald-500" /> 模型价格（全局）
+              <DollarSign className="w-4 h-4 text-emerald-500" /> 模型价格（全局）
             </div>
             <button
               onClick={() => {
@@ -638,11 +700,13 @@ export default function Settings() {
             </p>
           </div>
         </section>
+        )}
 
         {/* 超时与心跳 */}
+        {showPricing && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2 font-medium text-foreground">
-            <Timer className="w-5 h-5 text-blue-500" /> 超时与心跳配置
+            <Timer className="w-4 h-4 text-blue-500" /> 超时与心跳配置
           </div>
           <div className="p-4 sm:p-6">
             <TimeoutSettings
@@ -651,22 +715,27 @@ export default function Settings() {
               defaults={timeoutDefaults}
               modelSuggestions={timeoutModelSuggestions}
               onValidityChange={setTimeoutsValid}
-              onChange={next => setPreferences(previous => {
-                const updated = { ...next };
-                // The global update API merges preferences; null explicitly deletes a key.
-                for (const key of [...TIMEOUT_KEYS, 'header_timeout']) {
-                  if (key in previous && !(key in updated)) updated[key] = null;
-                }
-                return updated;
-              })}
+              onChange={next => {
+                setIsDirty(true);
+                setPreferences(previous => {
+                  const updated = { ...next };
+                  // The global update API merges preferences; null explicitly deletes a key.
+                  for (const key of [...TIMEOUT_KEYS, 'header_timeout']) {
+                    if (key in previous && !(key in updated)) updated[key] = null;
+                  }
+                  return updated;
+                });
+              }}
             />
           </div>
         </section>
+        )}
 
         {/* 数据管理 */}
+        {showStorage && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2 font-medium text-foreground">
-            <Database className="w-5 h-5 text-purple-500" /> 数据保留策略
+            <Database className="w-4 h-4 text-purple-500" /> 数据保留策略
           </div>
           <div className="p-6 space-y-6">
             <div>
@@ -675,7 +744,7 @@ export default function Settings() {
                 type="number" min="0"
                 value={preferences.log_raw_data_retention_hours ?? 24}
                 onChange={e => updatePreference('log_raw_data_retention_hours', parseInt(e.target.value))}
-                className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground"
+                className="w-full max-w-[220px] bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono tabular-nums text-foreground focus:border-primary outline-none"
               />
               <p className="text-xs text-muted-foreground mt-2">控制日志中请求体、响应体等包体字段的保留时长。超时后包体不再展示，但日志记录本身不受影响。设为 0 表示不保存包体，仅记录基础日志信息</p>
             </div>
@@ -685,7 +754,7 @@ export default function Settings() {
               <select
                 value={preferences.log_retention_mode ?? 'keep'}
                 onChange={e => updatePreference('log_retention_mode', e.target.value)}
-                className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground"
+                className="w-full max-w-md bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground focus:border-primary outline-none"
               >
                 <option value="keep">不自动清理（永久保留）</option>
                 <option value="manual">仅手动清理</option>
@@ -735,28 +804,35 @@ export default function Settings() {
             )}
           </div>
         </section>
+        )}
 
         {/* 全局 IP 黑名单 */}
+        {showSecurity && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2 font-medium text-foreground">
-            <Ban className="w-5 h-5 text-red-500" /> IP 黑名单
+            <Ban className="w-4 h-4 text-red-500" /> IP 黑名单
           </div>
           <div className="p-6 space-y-3">
             <p className="text-sm text-muted-foreground">全局 IP 黑名单对所有请求生效，包括 API 和管理接口。每行填写一个精确 IP 或 CIDR 网段。</p>
             <textarea
               value={globalIpBlacklistText}
-              onChange={e => setGlobalIpBlacklistText(e.target.value)}
+              onChange={e => {
+                setGlobalIpBlacklistText(e.target.value);
+                setIsDirty(true);
+              }}
               placeholder={'例如：\n1.2.3.4\n10.0.0.0/8'}
-              className="w-full min-h-[120px] bg-background border border-border focus:border-primary px-3 py-2 rounded-lg text-sm font-mono text-foreground"
+              className="w-full max-w-xl min-h-[120px] bg-background border border-border focus:border-primary px-3 py-2 rounded-lg text-sm font-mono text-foreground outline-none"
             />
             <p className="text-xs text-muted-foreground">点击页面顶部「保存配置」按钮后生效。各 API Key 还可在 Key 管理页独立配置 Key 级黑名单。</p>
           </div>
         </section>
+        )}
 
         {/* 数据库清理工具 */}
+        {showStorage && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center gap-2 font-medium text-foreground">
-            <Database className="w-5 h-5 text-rose-500" /> 数据库清理工具
+            <Database className="w-4 h-4 text-rose-500" /> 数据库清理工具
           </div>
           <div className="p-6 space-y-5">
             <div className="p-4 bg-rose-500/10 border border-rose-500/20 rounded-lg text-sm text-rose-700 dark:text-rose-300">
@@ -803,7 +879,7 @@ export default function Settings() {
                   min={1}
                   value={cleanupOlderThanHours}
                   onChange={e => setCleanupOlderThanHours(parseInt(e.target.value || '0', 10))}
-                  className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm text-foreground"
+                  className="w-full max-w-[220px] bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono tabular-nums text-foreground focus:border-primary outline-none"
                 />
               </div>
             )}
@@ -904,12 +980,14 @@ export default function Settings() {
             )}
           </div>
         </section>
+        )}
 
         {/* 第三方客户端配置 */}
+        {showRouting && (
         <section className="bg-card border border-border rounded-xl overflow-hidden">
           <div className="p-4 border-b border-border bg-muted/30 flex items-center justify-between">
             <div className="flex items-center gap-2 font-medium text-foreground">
-              <Blocks className="w-5 h-5 text-pink-500" /> 第三方客户端 (Playground)
+              <Blocks className="w-4 h-4 text-pink-500" /> 第三方客户端 (Playground)
             </div>
             <button
               onClick={() => {
@@ -979,6 +1057,7 @@ export default function Settings() {
             </div>
           </div>
         </section>
+        )}
 
       </div>
     </div>

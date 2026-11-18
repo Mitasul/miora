@@ -21,11 +21,11 @@ from core.log_config import logger
 
 router = APIRouter()
 
-# GitHub 仓库信息
+# GitHub 仓库信息（默认固定指向 Mitasul/miora，未显式配置 PYPI_PACKAGE 时不查询 PyPI）
 GITHUB_REPO = os.getenv("GITHUB_REPO", "Mitasul/miora")
 GITHUB_API = f"https://api.github.com/repos/{GITHUB_REPO}"
 GHCR_IMAGE = os.getenv("GHCR_IMAGE", f"ghcr.io/{GITHUB_REPO.lower()}")
-PYPI_PACKAGE = os.getenv("PYPI_PACKAGE", "miora")
+PYPI_PACKAGE = os.getenv("PYPI_PACKAGE", "").strip()
 
 
 # ─── 部署类型检测 ───
@@ -50,13 +50,14 @@ def _detect_deploy_type() -> str:
     if os.path.isdir(os.path.join(source, ".git")):
         return "git"
 
-    # Pip 检测
-    try:
-        import importlib.metadata
-        importlib.metadata.version(PYPI_PACKAGE)
-        return "pip"
-    except Exception:
-        pass
+    # Pip 检测（仅当显式配置了 PYPI_PACKAGE 时启用）
+    if PYPI_PACKAGE:
+        try:
+            import importlib.metadata
+            importlib.metadata.version(PYPI_PACKAGE)
+            return "pip"
+        except Exception:
+            pass
 
     return "unknown"
 
@@ -85,11 +86,13 @@ def _get_current_version(app=None) -> str:
             return tomllib.load(f)["project"]["version"]
     except Exception:
         pass
-    try:
-        import importlib.metadata
-        return importlib.metadata.version(PYPI_PACKAGE)
-    except Exception:
-        return "unknown"
+    if PYPI_PACKAGE:
+        try:
+            import importlib.metadata
+            return importlib.metadata.version(PYPI_PACKAGE)
+        except Exception:
+            pass
+    return "unknown"
 
 
 def _get_git_info() -> dict:
@@ -125,43 +128,81 @@ def _compare_versions(current: str, latest: str) -> bool:
 
 # ─── GitHub / Registry 查询 ───
 
-async def _fetch_latest_release() -> dict | None:
+async def _fetch_latest_release(current_version: str = "") -> dict | None:
     import httpx
+    headers = {"Accept": "application/vnd.github.v3+json", "User-Agent": "Miora"}
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(
-                f"{GITHUB_API}/releases/latest",
-                headers={"Accept": "application/vnd.github.v3+json"},
-            )
+        async with httpx.AsyncClient(timeout=10, trust_env=True) as client:
+            release_info: dict | None = None
+            resp = await client.get(f"{GITHUB_API}/releases/latest", headers=headers)
             if resp.status_code == 200:
                 data = resp.json()
-                return {
-                    "version": data.get("tag_name", "").lstrip("v"),
-                    "tag": data.get("tag_name", ""),
-                    "name": data.get("name", ""),
-                    "body": data.get("body", ""),
-                    "published_at": data.get("published_at", ""),
-                    "html_url": data.get("html_url", ""),
+                tag_name = data.get("tag_name") or ""
+                release_info = {
+                    "version": tag_name.lstrip("v"),
+                    "tag": tag_name,
+                    "name": data.get("name") or tag_name,
+                    "body": (data.get("body") or "").strip(),
+                    "published_at": data.get("published_at") or "",
+                    "html_url": data.get("html_url") or f"https://github.com/{GITHUB_REPO}/releases",
                 }
-            # fallback: 最新 tag
-            resp = await client.get(
-                f"{GITHUB_API}/tags?per_page=1",
-                headers={"Accept": "application/vnd.github.v3+json"},
-            )
-            if resp.status_code == 200:
-                tags = resp.json()
-                if tags:
-                    tag_name = tags[0].get("name", "")
-                    return {
-                        "version": tag_name.lstrip("v"),
-                        "tag": tag_name,
-                        "name": tag_name,
-                        "body": "",
-                        "published_at": "",
-                        "html_url": f"https://github.com/{GITHUB_REPO}/releases/tag/{tag_name}",
-                    }
+            else:
+                # fallback 1: 最新 tag
+                resp = await client.get(f"{GITHUB_API}/tags?per_page=1", headers=headers)
+                if resp.status_code == 200:
+                    tags = resp.json()
+                    if tags:
+                        tag_name = tags[0].get("name") or ""
+                        release_info = {
+                            "version": tag_name.lstrip("v"),
+                            "tag": tag_name,
+                            "name": tag_name,
+                            "body": "",
+                            "published_at": "",
+                            "html_url": f"https://github.com/{GITHUB_REPO}/releases/tag/{tag_name}",
+                        }
+
+            # fallback 2: 若仓库直接推送到 main 尚未打 Release/Tag，读取 main 分支 pyproject.toml 版本
+            if not release_info:
+                raw_resp = await client.get(
+                    f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/pyproject.toml",
+                    headers={"User-Agent": "Miora"},
+                )
+                if raw_resp.status_code == 200:
+                    import tomllib
+                    ver = tomllib.loads(raw_resp.text).get("project", {}).get("version", "")
+                    if ver:
+                        release_info = {
+                            "version": ver.lstrip("v"),
+                            "tag": f"v{ver.lstrip('v')}",
+                            "name": f"main (v{ver.lstrip('v')})",
+                            "body": "",
+                            "published_at": "",
+                            "html_url": f"https://github.com/{GITHUB_REPO}/commits/main",
+                        }
+
+            # 若自动构建 Release 没有填写 body，自动拉取 Mitasul/miora 的提交摘要补充展示
+            if release_info and not release_info.get("body") and current_version and current_version != "unknown":
+                cur_tag = f"v{current_version.lstrip('v')}"
+                target_ref = release_info.get("tag") or "main"
+                if cur_tag != target_ref:
+                    cmp_resp = await client.get(
+                        f"{GITHUB_API}/compare/{cur_tag}...{target_ref}",
+                        headers=headers,
+                    )
+                    if cmp_resp.status_code == 200:
+                        commits = cmp_resp.json().get("commits") or []
+                        lines = [
+                            f"• {c.get('sha', '')[:7]} {(c.get('commit', {}).get('message') or '').splitlines()[0]}"
+                            for c in reversed(commits[-15:])
+                            if c.get("commit", {}).get("message")
+                        ]
+                        if lines:
+                            release_info["body"] = "\n".join(lines)
+
+            return release_info
     except Exception as e:
-        logger.warning(f"[system] Failed to fetch latest release: {e}")
+        logger.warning(f"[system] Failed to fetch latest release from {GITHUB_REPO}: {e}")
     return None
 
 
@@ -263,6 +304,7 @@ async def get_version(api_index: int = Depends(verify_admin_api_key)):
     result = {
         "version": _get_current_version(app),
         "deploy_type": deploy_type,
+        "repo": GITHUB_REPO,
     }
     if deploy_type == "git":
         result["git"] = _get_git_info()
@@ -280,13 +322,14 @@ async def check_update(api_index: int = Depends(verify_admin_api_key)):
     result = {
         "current_version": current,
         "deploy_type": deploy_type,
+        "repo": GITHUB_REPO,
         "has_update": False,
         "update_instructions": None,
     }
 
     if deploy_type == "git":
         result["git"] = _get_git_info()
-        latest = await _fetch_latest_release()
+        latest = await _fetch_latest_release(current)
         result["latest_release"] = latest
         if latest:
             result["has_update"] = _compare_versions(current, latest["version"])
@@ -315,15 +358,15 @@ async def check_update(api_index: int = Depends(verify_admin_api_key)):
 
     elif deploy_type == "docker":
         result["docker"] = _get_docker_info()
-        # 从 GitHub release 获取最新版本（Docker tag 跟 release 同步）
-        latest = await _fetch_latest_release()
+        # 从 Mitasul/miora 获取最新版本
+        latest = await _fetch_latest_release(current)
         result["latest_release"] = latest
         docker_tag = await _fetch_latest_docker_tag()
         result["latest_docker"] = docker_tag
         if latest:
             result["has_update"] = _compare_versions(current, latest["version"])
-        # 生成更新指令
-        tag = docker_tag["tag"] if docker_tag else "latest"
+        # 生成更新指令（优先用具体 release tag，避免 GHCR API 未授权返回 None 时退化为 latest）
+        tag = (docker_tag and docker_tag.get("tag")) or (latest and latest.get("tag")) or "latest"
         result["update_instructions"] = {
             "type": "docker",
             "commands": [
@@ -334,7 +377,7 @@ async def check_update(api_index: int = Depends(verify_admin_api_key)):
             "can_auto_update": _get_docker_info().get("socket_available", False),
         }
 
-    elif deploy_type == "pip":
+    elif deploy_type == "pip" and PYPI_PACKAGE:
         pypi = await _fetch_pypi_version()
         result["latest_pypi"] = pypi
         if pypi:
@@ -349,8 +392,8 @@ async def check_update(api_index: int = Depends(verify_admin_api_key)):
         }
 
     else:
-        # unknown
-        latest = await _fetch_latest_release()
+        # unknown / 源码裸跑：统一从 Mitasul/miora 检查版本
+        latest = await _fetch_latest_release(current)
         result["latest_release"] = latest
         if latest:
             result["has_update"] = _compare_versions(current, latest["version"])

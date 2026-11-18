@@ -3,50 +3,386 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
+  /* =========================================================================
+   * 1. PALETTE SYSTEM (7 Curated Ramps × Light & Dark, WCAG AA >= 4.5:1 verified)
+   * Default palette: sapphire (深海星蓝)
+   * ========================================================================= */
+  :root,
+  html[data-palette='sapphire'] {
+    --background: 220 28% 97.8%;
+    --foreground: 224 35% 10%;
     --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
+    --card-foreground: 224 35% 10%;
     --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 221.2 83.2% 53.3%;
+    --popover-foreground: 224 35% 10%;
+    --primary: 221 83% 53%;
+    --primary-ink: 221 83% 46%;
     --primary-foreground: 0 0% 100%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 221.2 83.2% 53.3%;
+    --secondary: 220 20% 94%;
+    --secondary-foreground: 224 30% 14%;
+    --muted: 220 18% 94.2%;
+    --muted-foreground: 220 12% 40%;
+    --accent: 218 32% 93.5%;
+    --accent-foreground: 222 35% 14%;
+    --destructive: 0 84% 56%;
+    --destructive-foreground: 0 0% 99%;
+    --success: 152 69% 36%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 46%;
+    --warning-foreground: 36 85% 10%;
+    --info: 201 90% 44%;
+    --info-foreground: 0 0% 100%;
+    --border: 220 16% 89%;
+    --input: 220 16% 88%;
+    --ring: 221 83% 53%;
+    --shadow-tint: 222 40% 12%;
+    --aurora-secondary: 256 85% 65%;
     --radius: 0.75rem;
   }
 
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    /* card / popover 稍微提亮，避免暗色模式下与背景融为一体 */
-    --card: 240 6% 10%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 6% 10%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 240 3.7% 15.9%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 15.9%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
+  .dark,
+  html.dark[data-palette='sapphire'] {
+    --background: 224 28% 6%;
+    --foreground: 216 30% 97%;
+    --card: 224 23% 10%;
+    --card-foreground: 216 30% 97%;
+    --popover: 224 24% 10.5%;
+    --popover-foreground: 216 30% 97%;
+    --primary: 217 91% 60%;
+    --primary-ink: 217 91% 66%;
+    --primary-foreground: 224 47% 10%;
+    --secondary: 223 18% 16%;
+    --secondary-foreground: 216 30% 96%;
+    --muted: 223 18% 15.8%;
+    --muted-foreground: 218 14% 66%;
+    --accent: 222 22% 17.5%;
+    --accent-foreground: 216 30% 97%;
+    --destructive: 0 68% 42%;
     --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 15.9%;
-    --input: 240 3.7% 15.9%;
-    --ring: 240 4.9% 83.9%;
+    --success: 152 68% 46%;
+    --success-foreground: 155 60% 9%;
+    --warning: 43 96% 56%;
+    --warning-foreground: 38 85% 10%;
+    --info: 199 89% 56%;
+    --info-foreground: 204 60% 10%;
+    --border: 223 17% 17.5%;
+    --input: 223 17% 17.5%;
+    --ring: 217 91% 60%;
+    --shadow-tint: 226 60% 2%;
+    --aurora-secondary: 262 85% 62%;
+  }
+
+  /* ── 雾霭薰衣草 (Lavender Mist) ── */
+  html[data-palette='lavender'] {
+    --background: 266 42% 98%;
+    --foreground: 262 35% 12%;
+    --card: 266 50% 99.6%;
+    --card-foreground: 262 35% 12%;
+    --popover: 266 50% 99.6%;
+    --popover-foreground: 262 35% 12%;
+    --primary: 258 78% 56%;
+    --primary-ink: 258 76% 49%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 265 32% 93.8%;
+    --secondary-foreground: 262 32% 16%;
+    --muted: 265 28% 94%;
+    --muted-foreground: 260 14% 41%;
+    --accent: 266 42% 93.2%;
+    --accent-foreground: 262 36% 16%;
+    --border: 264 22% 88.8%;
+    --input: 264 22% 88%;
+    --ring: 258 78% 56%;
+    --shadow-tint: 262 42% 14%;
+    --aurora-secondary: 316 80% 66%;
+  }
+
+  html.dark[data-palette='lavender'] {
+    --background: 262 30% 6.8%;
+    --foreground: 266 35% 97%;
+    --card: 261 25% 10.8%;
+    --card-foreground: 266 35% 97%;
+    --popover: 261 26% 11.2%;
+    --popover-foreground: 266 35% 97%;
+    --primary: 263 88% 72%;
+    --primary-ink: 265 90% 76%;
+    --primary-foreground: 262 48% 11%;
+    --secondary: 260 20% 17%;
+    --secondary-foreground: 266 32% 96%;
+    --muted: 260 19% 16.8%;
+    --muted-foreground: 262 16% 68%;
+    --accent: 262 24% 18.8%;
+    --accent-foreground: 266 35% 97%;
+    --border: 260 19% 18.8%;
+    --input: 260 19% 18.8%;
+    --ring: 263 88% 72%;
+    --shadow-tint: 264 60% 3%;
+    --aurora-secondary: 312 78% 60%;
+  }
+
+  /* ── 夏日柠檬 (Summer Lemon · Flip-contrast primary button per §5.6.1) ── */
+  html[data-palette='lemon'] {
+    --background: 48 52% 97.4%;
+    --foreground: 38 42% 11%;
+    --card: 48 60% 99.6%;
+    --card-foreground: 38 42% 11%;
+    --popover: 48 60% 99.6%;
+    --popover-foreground: 38 42% 11%;
+    --primary: 47 95% 50%;
+    --primary-ink: 38 92% 31%;
+    --primary-foreground: 36 85% 10%;
+    --secondary: 46 38% 92.5%;
+    --secondary-foreground: 38 40% 14%;
+    --muted: 46 34% 92.8%;
+    --muted-foreground: 38 18% 38%;
+    --accent: 47 52% 91.2%;
+    --accent-foreground: 38 44% 13%;
+    --border: 44 26% 86.5%;
+    --input: 44 26% 85.5%;
+    --ring: 45 93% 44%;
+    --shadow-tint: 38 45% 14%;
+    --aurora-secondary: 158 72% 48%;
+  }
+
+  html.dark[data-palette='lemon'] {
+    --background: 42 22% 6.4%;
+    --foreground: 48 38% 96.5%;
+    --card: 40 19% 10.4%;
+    --card-foreground: 48 38% 96.5%;
+    --popover: 40 20% 10.8%;
+    --popover-foreground: 48 38% 96.5%;
+    --primary: 48 96% 56%;
+    --primary-ink: 48 96% 60%;
+    --primary-foreground: 38 88% 9%;
+    --secondary: 40 16% 16.5%;
+    --secondary-foreground: 48 35% 96%;
+    --muted: 40 15% 16.2%;
+    --muted-foreground: 44 15% 66%;
+    --accent: 42 20% 18.2%;
+    --accent-foreground: 48 38% 96.5%;
+    --border: 40 15% 18.2%;
+    --input: 40 15% 18.2%;
+    --ring: 48 96% 56%;
+    --shadow-tint: 40 50% 2%;
+    --aurora-secondary: 152 68% 46%;
+  }
+
+  /* ── 晴王青提 (Muscat Grape · Juicy lime-emerald with deep leaf ink) ── */
+  html[data-palette='muscat'] {
+    --background: 102 38% 97.5%;
+    --foreground: 128 36% 11%;
+    --card: 104 44% 99.6%;
+    --card-foreground: 128 36% 11%;
+    --popover: 104 44% 99.6%;
+    --popover-foreground: 128 36% 11%;
+    --primary: 88 76% 47%;
+    --primary-ink: 112 72% 27%;
+    --primary-foreground: 115 70% 9%;
+    --secondary: 102 28% 92.8%;
+    --secondary-foreground: 126 34% 14%;
+    --muted: 104 24% 93.2%;
+    --muted-foreground: 124 14% 38%;
+    --accent: 98 38% 91.5%;
+    --accent-foreground: 126 38% 13%;
+    --border: 104 20% 87.2%;
+    --input: 104 20% 86.2%;
+    --ring: 92 74% 40%;
+    --shadow-tint: 125 40% 12%;
+    --aurora-secondary: 168 76% 44%;
+  }
+
+  html.dark[data-palette='muscat'] {
+    --background: 122 24% 6.4%;
+    --foreground: 108 30% 96.5%;
+    --card: 120 20% 10.4%;
+    --card-foreground: 108 30% 96.5%;
+    --popover: 120 21% 10.8%;
+    --popover-foreground: 108 30% 96.5%;
+    --primary: 90 78% 56%;
+    --primary-ink: 90 80% 60%;
+    --primary-foreground: 118 68% 9%;
+    --secondary: 118 16% 16.5%;
+    --secondary-foreground: 108 28% 96%;
+    --muted: 118 15% 16.2%;
+    --muted-foreground: 114 14% 66%;
+    --accent: 116 19% 18.2%;
+    --accent-foreground: 108 30% 96.5%;
+    --border: 118 15% 18.2%;
+    --input: 118 15% 18.2%;
+    --ring: 90 78% 56%;
+    --shadow-tint: 122 55% 2%;
+    --aurora-secondary: 166 72% 46%;
+  }
+
+  /* ── 白桃乌龙 (White Peach) ── */
+  html[data-palette='peach'] {
+    --background: 16 52% 98%;
+    --foreground: 352 32% 12%;
+    --card: 18 60% 99.6%;
+    --card-foreground: 352 32% 12%;
+    --popover: 18 60% 99.6%;
+    --popover-foreground: 352 32% 12%;
+    --primary: 348 83% 47%;
+    --primary-ink: 348 83% 44%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 14 36% 93.6%;
+    --secondary-foreground: 352 30% 16%;
+    --muted: 14 32% 93.8%;
+    --muted-foreground: 355 13% 41%;
+    --accent: 356 46% 93.5%;
+    --accent-foreground: 350 38% 16%;
+    --border: 12 24% 88.5%;
+    --input: 12 24% 87.8%;
+    --ring: 348 83% 47%;
+    --shadow-tint: 352 38% 14%;
+    --aurora-secondary: 32 92% 60%;
+  }
+
+  html.dark[data-palette='peach'] {
+    --background: 352 24% 6.8%;
+    --foreground: 16 36% 97%;
+    --card: 352 20% 10.8%;
+    --card-foreground: 16 36% 97%;
+    --popover: 352 21% 11.2%;
+    --popover-foreground: 16 36% 97%;
+    --primary: 352 90% 68%;
+    --primary-ink: 352 92% 73%;
+    --primary-foreground: 352 52% 10%;
+    --secondary: 352 16% 17%;
+    --secondary-foreground: 16 32% 96%;
+    --muted: 352 15% 16.8%;
+    --muted-foreground: 10 14% 67%;
+    --accent: 352 20% 18.8%;
+    --accent-foreground: 16 36% 97%;
+    --border: 352 15% 18.8%;
+    --input: 352 15% 18.8%;
+    --ring: 352 90% 68%;
+    --shadow-tint: 352 55% 3%;
+    --aurora-secondary: 28 88% 58%;
+  }
+
+  /* ── 海盐薄荷 (Sea Salt Mint) ── */
+  html[data-palette='mint'] {
+    --background: 184 38% 97.6%;
+    --foreground: 192 40% 11%;
+    --card: 184 45% 99.6%;
+    --card-foreground: 192 40% 11%;
+    --popover: 184 45% 99.6%;
+    --popover-foreground: 192 40% 11%;
+    --primary: 176 78% 33%;
+    --primary-ink: 178 82% 28%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 184 26% 93.2%;
+    --secondary-foreground: 190 36% 14%;
+    --muted: 184 24% 93.6%;
+    --muted-foreground: 190 15% 38%;
+    --accent: 180 36% 92%;
+    --accent-foreground: 188 40% 14%;
+    --border: 184 20% 87.8%;
+    --input: 184 20% 87%;
+    --ring: 176 78% 33%;
+    --shadow-tint: 190 42% 12%;
+    --aurora-secondary: 214 88% 58%;
+  }
+
+  html.dark[data-palette='mint'] {
+    --background: 192 28% 6.4%;
+    --foreground: 184 32% 96.8%;
+    --card: 190 22% 10.4%;
+    --card-foreground: 184 32% 96.8%;
+    --popover: 190 23% 10.8%;
+    --popover-foreground: 184 32% 96.8%;
+    --primary: 174 78% 52%;
+    --primary-ink: 174 80% 58%;
+    --primary-foreground: 186 65% 9%;
+    --secondary: 190 17% 16.5%;
+    --secondary-foreground: 184 30% 96%;
+    --muted: 190 16% 16.2%;
+    --muted-foreground: 186 14% 66%;
+    --accent: 188 20% 18.2%;
+    --accent-foreground: 184 32% 96.8%;
+    --border: 190 16% 18.2%;
+    --input: 190 16% 18.2%;
+    --ring: 174 78% 52%;
+    --shadow-tint: 192 55% 2%;
+    --aurora-secondary: 212 84% 58%;
+  }
+
+  /* ── 极客水墨 (Graphite Ink) ── */
+  html[data-palette='graphite'] {
+    --background: 0 0% 97.5%;
+    --foreground: 0 0% 7%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 7%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 7%;
+    --primary: 0 0% 11%;
+    --primary-ink: 0 0% 11%;
+    --primary-foreground: 0 0% 99%;
+    --secondary: 0 0% 93.2%;
+    --secondary-foreground: 0 0% 11%;
+    --muted: 0 0% 93.5%;
+    --muted-foreground: 0 0% 39%;
+    --accent: 0 0% 92%;
+    --accent-foreground: 0 0% 9%;
+    --border: 0 0% 87.5%;
+    --input: 0 0% 86.5%;
+    --ring: 0 0% 14%;
+    --shadow-tint: 0 0% 8%;
+    --aurora-secondary: 220 14% 55%;
+  }
+
+  html.dark[data-palette='graphite'] {
+    --background: 0 0% 5.5%;
+    --foreground: 0 0% 97%;
+    --card: 0 0% 9.6%;
+    --card-foreground: 0 0% 97%;
+    --popover: 0 0% 10%;
+    --popover-foreground: 0 0% 97%;
+    --primary: 0 0% 94%;
+    --primary-ink: 0 0% 94%;
+    --primary-foreground: 0 0% 8%;
+    --secondary: 0 0% 15.8%;
+    --secondary-foreground: 0 0% 96%;
+    --muted: 0 0% 15.5%;
+    --muted-foreground: 0 0% 65%;
+    --accent: 0 0% 17.8%;
+    --accent-foreground: 0 0% 97%;
+    --border: 0 0% 17.8%;
+    --input: 0 0% 17.8%;
+    --ring: 0 0% 88%;
+    --shadow-tint: 0 0% 0%;
+    --aurora-secondary: 220 12% 45%;
+  }
+
+  /* =========================================================================
+   * 2. ARCHITECTURAL STYLE TOKENS (Radius & StructuralOverrides)
+   * ========================================================================= */
+  html[data-style='modern'] {
+    --radius: 0.75rem;
+  }
+
+  html[data-style='brutalist'] {
+    --radius: 0.1875rem;
+    --border: hsl(var(--foreground) / 0.78);
+    --brutal-ink: var(--foreground);
+    --brutal-shadow: var(--foreground);
+  }
+  /* Keep Tailwind hsl(var(--border)) valid triplet in brutalist mode */
+  html[data-style='brutalist']:not(.dark) {
+    --border: 240 12% 16%;
+    --input: 240 12% 18%;
+  }
+  html.dark[data-style='brutalist'] {
+    --border: 0 0% 38%;
+    --input: 0 0% 36%;
+  }
+
+  html[data-style='glass'] {
+    --radius: 1rem;
+  }
+
+  html[data-style='minimal'] {
+    --radius: 0.375rem;
   }
 }
 
@@ -54,8 +390,34 @@
   * {
     @apply border-border;
   }
+
   body {
     @apply bg-background text-foreground antialiased overflow-x-hidden;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  /* 表格、等宽文本与数字标签默认开启等宽数字对齐 (§4.7.2) */
+  table td,
+  table th,
+  .font-mono,
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* 精细滚动条：与当前主题色温融为一体 */
+  ::-webkit-scrollbar {
+    width: 7px;
+    height: 7px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.24);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.42);
   }
 
   /* 隐藏移动端横向滚动胶囊栏的滚动条，保持滑动顺畅 */
@@ -77,12 +439,185 @@
   select:-webkit-autofill,
   select:-webkit-autofill:hover,
   select:-webkit-autofill:focus {
-    -webkit-text-fill-color: var(--foreground);
+    -webkit-text-fill-color: hsl(var(--foreground));
     -webkit-box-shadow: 0 0 0px 1000px transparent inset;
     transition: background-color 5000s ease-in-out 0s;
   }
-  
+
   .dark input:-webkit-autofill {
     -webkit-text-fill-color: hsl(var(--foreground));
   }
+}
+
+/* ===========================================================================
+ * 3. UNIFIED SURFACE ELEVATION & STYLE PHYSICS (§6.1 Light from above)
+ * =========================================================================== */
+
+/* 确保明亮色系（夏日柠檬、晴王青提等）在亮色背景上的 text-primary 链接/徽章依然满足 WCAG AA >= 5:1 */
+.text-primary {
+  color: hsl(var(--primary-ink, var(--primary)));
+}
+
+/* ── A. Modern (现代精致 · 默认层次感) ── */
+html:not([data-style]) .bg-card,
+html[data-style='modern'] .bg-card {
+  box-shadow:
+    0 1px 2px 0 hsl(var(--shadow-tint) / 0.04),
+    0 4px 14px -3px hsl(var(--shadow-tint) / 0.045);
+}
+
+html.dark:not([data-style]) .bg-card,
+html.dark[data-style='modern'] .bg-card {
+  box-shadow:
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.055),
+    0 3px 12px -2px hsl(0 0% 0% / 0.42);
+}
+
+html:not([data-style]):not(.dark) input:not([type='checkbox']):not([type='radio']):not([type='range']),
+html[data-style='modern']:not(.dark) input:not([type='checkbox']):not([type='radio']):not([type='range']),
+html:not([data-style]):not(.dark) textarea,
+html[data-style='modern']:not(.dark) textarea {
+  box-shadow: inset 0 1px 2px 0 hsl(var(--shadow-tint) / 0.03);
+}
+
+/* ── B. Neo-Brutalism (新粗野主义 · 硬边墨线 + 零模糊实体偏移阴影) ── */
+html[data-style='brutalist'] .rounded-2xl,
+html[data-style='brutalist'] .rounded-xl,
+html[data-style='brutalist'] .rounded-lg {
+  border-radius: 0.1875rem;
+}
+
+html[data-style='brutalist'] .rounded-md,
+html[data-style='brutalist'] .rounded {
+  border-radius: 0.125rem;
+}
+
+html[data-style='brutalist'] #app-main-scroll {
+  background-image: radial-gradient(hsl(var(--foreground) / 0.085) 1px, transparent 1px);
+  background-size: 18px 18px;
+}
+
+html[data-style='brutalist']:not(.dark) .bg-card {
+  border-width: 1.5px;
+  border-color: hsl(var(--foreground) / 0.85);
+  box-shadow: 3px 3px 0 0 hsl(var(--foreground) / 0.88);
+}
+
+html.dark[data-style='brutalist'] .bg-card {
+  border-width: 1.5px;
+  border-color: hsl(var(--foreground) / 0.42);
+  box-shadow: 3px 3px 0 0 hsl(var(--primary) / 0.48);
+}
+
+/* 侧边栏与顶栏分割线强化为硬朗建筑线 */
+html[data-style='brutalist'] aside,
+html[data-style='brutalist'] header {
+  border-width: 1.5px;
+}
+
+/* 主按钮在粗野风格下呈现机械按键质感（不改动 fixed/absolute 定位元素） */
+html[data-style='brutalist']:not(.dark) button.bg-primary,
+html[data-style='brutalist']:not(.dark) a.bg-primary {
+  border: 1.5px solid hsl(var(--foreground) / 0.9);
+  box-shadow: 2px 2px 0 0 hsl(var(--foreground) / 0.9);
+  transition: transform 90ms ease, box-shadow 90ms ease, background-color 150ms ease;
+}
+
+html.dark[data-style='brutalist'] button.bg-primary,
+html.dark[data-style='brutalist'] a.bg-primary {
+  border: 1.5px solid hsl(var(--foreground) / 0.75);
+  box-shadow: 2px 2px 0 0 hsl(var(--foreground) / 0.55);
+  transition: transform 90ms ease, box-shadow 90ms ease, background-color 150ms ease;
+}
+
+html[data-style='brutalist'] button.bg-primary:hover:not(:disabled),
+html[data-style='brutalist'] a.bg-primary:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 0 hsl(var(--foreground) / 0.9);
+}
+
+html[data-style='brutalist'] button.bg-primary:active:not(:disabled),
+html[data-style='brutalist'] a.bg-primary:active {
+  transform: translate(1.5px, 1.5px);
+  box-shadow: 0 0 0 0 transparent;
+}
+
+/* 弹窗在粗野风格下的硬朗外框 */
+html[data-style='brutalist']:not(.dark) [role='dialog'] {
+  border-width: 2px;
+  border-color: hsl(var(--foreground) / 0.9);
+  box-shadow: 6px 6px 0 0 hsl(var(--foreground) / 0.9);
+}
+
+html.dark[data-style='brutalist'] [role='dialog'] {
+  border-width: 2px;
+  border-color: hsl(var(--foreground) / 0.5);
+  box-shadow: 6px 6px 0 0 hsl(var(--primary) / 0.55);
+}
+
+/* ── C. Frosted Glass (流光毛玻璃 · 零滚动模糊掉帧版：固定视口极光 + 晶莹镜面渐变表面) ── */
+html[data-style='glass'] .rounded-xl {
+  border-radius: 1rem;
+}
+
+html[data-style='glass'] .rounded-2xl {
+  border-radius: 1.25rem;
+}
+
+html[data-style='glass']:not(.dark) #app-main-scroll {
+  background-color: hsl(var(--background));
+  background-image:
+    radial-gradient(ellipse 65% 50% at 12% 6%, hsl(var(--primary) / 0.13), transparent 70%),
+    radial-gradient(ellipse 55% 45% at 88% 92%, hsl(var(--aurora-secondary) / 0.12), transparent 70%);
+}
+
+html.dark[data-style='glass'] #app-main-scroll {
+  background-color: hsl(var(--background));
+  background-image:
+    radial-gradient(ellipse 65% 50% at 14% 8%, hsl(var(--primary) / 0.16), transparent 72%),
+    radial-gradient(ellipse 55% 45% at 88% 90%, hsl(var(--aurora-secondary) / 0.13), transparent 72%);
+}
+
+html[data-style='glass']:not(.dark) .bg-card {
+  background-color: transparent;
+  background-image: linear-gradient(
+    165deg,
+    hsl(var(--card) / 0.92) 0%,
+    hsl(var(--card) / 0.78) 100%
+  );
+  border-color: hsl(var(--border) / 0.75);
+  box-shadow:
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.8),
+    0 6px 20px -6px hsl(var(--shadow-tint) / 0.08);
+}
+
+html.dark[data-style='glass'] .bg-card {
+  background-color: transparent;
+  background-image: linear-gradient(
+    165deg,
+    hsl(var(--card) / 0.88) 0%,
+    hsl(var(--card) / 0.72) 100%
+  );
+  border-color: hsl(0 0% 100% / 0.1);
+  box-shadow:
+    inset 0 1px 0 0 hsl(0 0% 100% / 0.11),
+    0 8px 24px -6px hsl(0 0% 0% / 0.45);
+}
+
+html[data-style='glass'] aside {
+  background-color: hsl(var(--card) / 0.92);
+}
+
+/* ── D. Minimal Precision (极简工业 · 克制微圆角 + 零阴影发丝分割) ── */
+html[data-style='minimal'] .rounded-2xl,
+html[data-style='minimal'] .rounded-xl {
+  border-radius: 0.5rem;
+}
+
+html[data-style='minimal'] .rounded-lg {
+  border-radius: 0.375rem;
+}
+
+html[data-style='minimal'] .bg-card {
+  box-shadow: none;
 }
