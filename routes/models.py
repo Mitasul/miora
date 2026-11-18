@@ -30,7 +30,7 @@ def _append_model_info_if_missing(models: List[Dict[str, Any]], unique: Set[str]
         "id": model_id,
         "object": "model",
         "created": 1720524448858,
-        "owned_by": "Zoaholic",
+        "owned_by": "Miora",
     })
 
 

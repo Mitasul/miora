@@ -36,7 +36,7 @@ def _set_header_case_insensitive(headers: Optional[dict], key: str, value) -> No
 
 
 def apply_custom_headers(headers: dict, custom_headers: Optional[dict]) -> None:
-    """将渠道自定义 headers 合并到请求头中。
+    """将自定义 headers 合并到请求头中。
 
     custom_headers 的值支持两种格式：
     - str: 直接设置
@@ -60,3 +60,46 @@ def apply_custom_headers(headers: dict, custom_headers: Optional[dict]) -> None:
                     break
             continue
         _set_header_case_insensitive(headers, k, v)
+
+
+DEFAULT_OUTBOUND_USER_AGENT = "Miora"
+
+
+def apply_global_outbound_headers(
+    headers: dict,
+    global_preferences: Optional[dict],
+    *,
+    is_passthrough: bool = False,
+) -> None:
+    """应用全局出站请求头与默认/自定义 User-Agent 标识。
+
+    优先级：
+    1. 若请求头中尚未显式携带 User-Agent（如渠道特定指纹或透传客户端 UA），
+       在非透传模式下默认补齐 `User-Agent: Miora`。
+    2. 若全局配置了 `user_agent`（非空字符串），覆盖或设置 `User-Agent`
+       （值为 `"null"` 时移除 User-Agent）。
+    3. 若全局配置了 `headers` / `custom_headers` 字典，按大小写无关合并到请求头中
+       （渠道级 `preferences.headers` 在此之后执行，可进一步按渠道覆盖）。
+    """
+    if not isinstance(headers, dict):
+        return
+    prefs = global_preferences if isinstance(global_preferences, dict) else {}
+
+    configured_ua = prefs.get("user_agent")
+    if isinstance(configured_ua, str) and configured_ua.strip():
+        ua_val = configured_ua.strip()
+        if ua_val.lower() == "null":
+            for existing_key in list(headers.keys()):
+                if str(existing_key).lower() == "user-agent":
+                    del headers[existing_key]
+                    break
+        else:
+            _set_header_case_insensitive(headers, "User-Agent", ua_val)
+    elif not is_passthrough and not has_header_case_insensitive(headers, "User-Agent"):
+        headers["User-Agent"] = DEFAULT_OUTBOUND_USER_AGENT
+
+    for key_name in ("headers", "custom_headers"):
+        global_custom = prefs.get(key_name)
+        if isinstance(global_custom, dict) and global_custom:
+            apply_custom_headers(headers, global_custom)
+

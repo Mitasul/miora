@@ -94,6 +94,19 @@ def _validate_preferences(preferences, owner: str) -> None:
         rules = preferences["quota_rules"]
         if not isinstance(rules, list) or len(parse_dimensional_rules(rules)) != len(rules):
             raise ValueError(f"{owner}.quota_rules contains invalid rules")
+    if "user_agent" in preferences and preferences["user_agent"] is not None:
+        if not isinstance(preferences["user_agent"], str):
+            raise ValueError(f"{owner}.user_agent must be a string")
+    for hdr_key in ("headers", "custom_headers"):
+        if hdr_key in preferences and preferences[hdr_key] is not None:
+            hdrs = preferences[hdr_key]
+            if not isinstance(hdrs, dict):
+                raise ValueError(f"{owner}.{hdr_key} must be an object")
+            for k, v in hdrs.items():
+                if not isinstance(k, str) or not k.strip():
+                    raise ValueError(f"{owner}.{hdr_key} keys must be non-empty strings")
+                if v is not None and not isinstance(v, (str, list, int, float, bool)):
+                    raise ValueError(f"{owner}.{hdr_key} values must be strings or arrays of strings")
 
 
 def _validate_candidate_shape(config: dict) -> None:
@@ -192,6 +205,14 @@ async def persist_config(app, sections_to_verify=None, changed_providers=None, *
             quota.init_from_config(config)
             staged.state.quota_registry = quota
         apply_backend_log_preferences(config.get("preferences") or {})
+        client_mgr = getattr(app.state, "client_manager", None)
+        if client_mgr is not None and isinstance(getattr(client_mgr, "default_config", None), dict):
+            from core.http_headers import DEFAULT_OUTBOUND_USER_AGENT
+            pref_ua = (config.get("preferences") or {}).get("user_agent")
+            resolved_ua = pref_ua.strip() if isinstance(pref_ua, str) and pref_ua.strip() and pref_ua.strip().lower() != "null" else DEFAULT_OUTBOUND_USER_AGENT
+            hdr_cfg = dict(client_mgr.default_config.get("headers") or {})
+            hdr_cfg["User-Agent"] = resolved_ua
+            client_mgr.default_config["headers"] = hdr_cfg
         for name, value in vars(staged.state).items():
             setattr(app.state, name, value)
     except HTTPException:

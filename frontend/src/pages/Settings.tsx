@@ -6,7 +6,7 @@ import { apiFetch } from '../lib/api';
 import { toastSuccess, toastError, toastWarning } from '../components/Toast';
 import {
   Save, RefreshCw, Zap, Shield, Ban,
-  Timer, Database, Blocks, Plus, Trash2, Link, DollarSign
+  Timer, Database, Blocks, Plus, Trash2, Link, DollarSign, Globe
 } from 'lucide-react';
 
 type CleanupAction = 'clear_fields' | 'delete_rows';
@@ -23,6 +23,8 @@ interface Preferences extends Record<string, unknown> {
   cooldown_period?: number;
   SCHEDULING_ALGORITHM?: string;
   rate_limit?: string;
+  user_agent?: string | null;
+  headers?: Record<string, string> | null;
   model_timeout?: TimeoutValue | null;
   keepalive_interval?: TimeoutValue | null;
   stream_header_timeout?: TimeoutValue | null;
@@ -75,6 +77,7 @@ export default function Settings() {
   const [timeoutDefaults, setTimeoutDefaults] = useState<TimeoutDefaults>();
   const [timeoutModelSuggestions, setTimeoutModelSuggestions] = useState<string[]>([]);
   const [globalIpBlacklistText, setGlobalIpBlacklistText] = useState('');
+  const [customHeadersList, setCustomHeadersList] = useState<{ key: string; value: string }[]>([]);
 
   // 数据库清理状态
   const [cleanupAction, setCleanupAction] = useState<CleanupAction>('clear_fields');
@@ -114,6 +117,13 @@ export default function Settings() {
             ];
           }
           setPreferences(loadedPreferences);
+          const rawGlobalHeaders = (loadedPreferences.headers || loadedPreferences.custom_headers || {}) as Record<string, unknown>;
+          setCustomHeadersList(
+            Object.entries(rawGlobalHeaders).map(([k, v]) => ({
+              key: k,
+              value: Array.isArray(v) ? v.join(',') : String(v ?? ''),
+            }))
+          );
           const apiConfig = data.api_config || data;
           setTimeoutDefaults(data.timeout_defaults);
           const modelNames = (apiConfig.providers || []).flatMap((provider: { model?: (string | Record<string, string>)[] }) =>
@@ -306,6 +316,20 @@ export default function Settings() {
       cleanedPreferences.model_price = validEntries.length > 0 ? Object.fromEntries(validEntries) : null;
     }
 
+    const uaTrimmed = (cleanedPreferences.user_agent || '').trim();
+    cleanedPreferences.user_agent = uaTrimmed ? uaTrimmed : null;
+
+    const validHeaderEntries: [string, string][] = [];
+    for (const item of customHeadersList) {
+      const k = item.key.trim();
+      if (!k) continue;
+      validHeaderEntries.push([k, item.value]);
+    }
+    cleanedPreferences.headers = validHeaderEntries.length > 0 ? Object.fromEntries(validHeaderEntries) : null;
+    if ('custom_headers' in cleanedPreferences) {
+      cleanedPreferences.custom_headers = null;
+    }
+
     const ipEntries = [...new Set(globalIpBlacklistText.split(/[\n,]+/).map(s => s.trim()).filter(Boolean))];
 
     setSaving(true);
@@ -409,6 +433,96 @@ export default function Settings() {
               className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono text-foreground"
             />
             <p className="text-xs text-muted-foreground mt-2">支持组合：例如 "15/min,100/hour,1000/day"</p>
+          </div>
+        </section>
+
+        {/* 上游请求标识与自定义请求头 */}
+        <section className="bg-card border border-border rounded-xl overflow-hidden">
+          <div className="p-4 border-b border-border bg-muted/30 flex items-center justify-between">
+            <div className="flex items-center gap-2 font-medium text-foreground">
+              <Globe className="w-5 h-5 text-indigo-500" /> 上游请求标识与全局自定义请求头
+            </div>
+            <button
+              type="button"
+              onClick={() => setCustomHeadersList(prev => [...prev, { key: '', value: '' }])}
+              className="text-xs flex items-center gap-1 bg-primary hover:bg-primary/90 text-primary-foreground px-2.5 py-1.5 rounded-md transition-colors"
+            >
+              <Plus className="w-3.5 h-3.5" /> 添加请求头
+            </button>
+          </div>
+          <div className="p-6 space-y-5">
+            <div>
+              <label className="text-sm font-medium text-foreground mb-1.5 block">全局默认 User-Agent 标识</label>
+              <input
+                type="text"
+                value={preferences.user_agent ?? ''}
+                onChange={e => updatePreference('user_agent', e.target.value)}
+                placeholder="Miora（留空默认使用 Miora）"
+                className="w-full bg-background border border-border px-3 py-2 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
+              />
+              <p className="text-xs text-muted-foreground mt-1.5">
+                向上游发送请求时携带的客户端标识。留空默认发送 <code className="bg-muted px-1 py-0.5 rounded text-foreground">Miora</code>；填写任意自定义值将全局覆盖（填写 <code className="bg-muted px-1 py-0.5 rounded text-foreground">null</code> 可移除 User-Agent）。单渠道可在渠道高级设置中单独覆盖。
+              </p>
+            </div>
+
+            <div className="space-y-3 pt-2 border-t border-border">
+              <div className="flex items-center justify-between">
+                <label className="text-sm font-medium text-foreground">全局附加自定义请求头 (Custom Headers)</label>
+              </div>
+              {customHeadersList.length === 0 ? (
+                <div className="text-sm text-muted-foreground italic py-3 text-center bg-muted/20 rounded-lg border border-dashed border-border">
+                  未配置全局附加请求头（如 X-Title、HTTP-Referer 或自定义鉴权/标识头）
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-[1fr_1.5fr_2rem] gap-2 text-[11px] text-muted-foreground font-medium px-1">
+                    <span>Header 名称</span>
+                    <span>Header 值（填 null 可屏蔽对应默认头）</span>
+                    <span></span>
+                  </div>
+                  {customHeadersList.map((item, idx) => (
+                    <div key={idx} className="grid grid-cols-[1fr_1.5fr_2rem] gap-2 items-center">
+                      <input
+                        type="text"
+                        value={item.key}
+                        onChange={e => {
+                          const next = [...customHeadersList];
+                          next[idx] = { ...next[idx], key: e.target.value };
+                          setCustomHeadersList(next);
+                        }}
+                        placeholder="X-Title / HTTP-Referer / X-Custom"
+                        className="bg-background border border-border px-3 py-1.5 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
+                      />
+                      <input
+                        type="text"
+                        value={item.value}
+                        onChange={e => {
+                          const next = [...customHeadersList];
+                          next[idx] = { ...next[idx], value: e.target.value };
+                          setCustomHeadersList(next);
+                        }}
+                        placeholder="Miora"
+                        className="bg-background border border-border px-3 py-1.5 rounded-lg text-sm font-mono text-foreground focus:border-primary outline-none"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = [...customHeadersList];
+                          next.splice(idx, 1);
+                          setCustomHeadersList(next);
+                        }}
+                        className="p-1 text-muted-foreground hover:text-destructive transition-colors"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+              <p className="text-xs text-muted-foreground">
+                此处配置的请求头对所有渠道生效（大小写无关合并）；若单渠道也配置了同名请求头，以单渠道配置为准。
+              </p>
+            </div>
           </div>
         </section>
 

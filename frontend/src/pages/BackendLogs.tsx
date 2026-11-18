@@ -517,7 +517,7 @@ export default function BackendLogs() {
                 type="text"
                 value={loggerSearchText}
                 onChange={e => setLoggerSearchText(e.target.value)}
-                placeholder="搜索 logger 名称，如 Zoaholic / httpx / watchfiles"
+                placeholder="搜索 logger 名称，如 Miora / httpx / watchfiles"
                 className="w-full bg-background border border-border rounded-md pl-9 pr-3 py-1.5 text-sm text-foreground h-8"
               />
             </div>

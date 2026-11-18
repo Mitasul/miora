@@ -607,7 +607,7 @@ async def _get_gemini_models(api_index: int, app):
             "name": name,
             "version": "v1beta",
             "displayName": model_id,
-            "description": f"Zoaholic provided model: {model_id}",
+            "description": f"Miora provided model: {model_id}",
             "supportedGenerationMethods": ["generateContent", "countTokens"],
             "inputTokenLimit": 30720,
             "outputTokenLimit": 2048,

@@ -152,8 +152,9 @@ async def process_request(
     proxy = safe_get(provider, "preferences", "proxy", default=proxy)  # provider proxy
 
     from core.http import proxy_context
+    global_prefs = safe_get(getattr(app.state, "config", None), "preferences", default={})
     with proxy_context(proxy):
-        url, headers, payload = await get_payload(request, engine, provider, api_key)
+        url, headers, payload = await get_payload(request, engine, provider, api_key, global_preferences=global_prefs)
     # custom headers 已在 get_payload → apply_request_interceptors 之前统一应用
     
 

@@ -20,7 +20,7 @@ def _append_model_info_if_missing(all_models, unique_models, model_id):
         "id": model_id,
         "object": "model",
         "created": 1720524448858,
-        "owned_by": "Zoaholic",
+        "owned_by": "Miora",
     })
 
 
@@ -196,7 +196,7 @@ def _post_models_for_key(api_index, config, api_list, models_list):
                                         "id": model_item,
                                         "object": "model",
                                         "created": 1720524448858,
-                                        "owned_by": "Zoaholic"
+                                        "owned_by": "Miora"
                                     }
                                     all_models.append(model_info)
                     else:
@@ -241,7 +241,7 @@ def _post_models_for_key(api_index, config, api_list, models_list):
                                         "id": model_item,
                                         "object": "model",
                                         "created": 1720524448858,
-                                        "owned_by": "Zoaholic"
+                                        "owned_by": "Miora"
                                     }
                                     all_models.append(model_info)
                 else:
@@ -266,7 +266,7 @@ def _post_models_for_key(api_index, config, api_list, models_list):
                                         "id": model,
                                         "object": "model",
                                         "created": 1720524448858,
-                                        "owned_by": "Zoaholic"
+                                        "owned_by": "Miora"
                                     }
                                     all_models.append(model_info)
                     else:
@@ -312,7 +312,7 @@ def _post_models_for_key(api_index, config, api_list, models_list):
                                         "id": model_item,
                                         "object": "model",
                                         "created": 1720524448858,
-                                        "owned_by": "Zoaholic"
+                                        "owned_by": "Miora"
                                     }
                                     all_models.append(model_info)
                 continue
@@ -411,7 +411,7 @@ def get_all_models(config, allowed_groups=None):
                     "id": model,
                     "object": "model",
                     "created": 1720524448858,
-                    "owned_by": "Zoaholic"
+                    "owned_by": "Miora"
                 }
                 all_models.append(model_info)
     

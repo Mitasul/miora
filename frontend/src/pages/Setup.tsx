@@ -128,10 +128,10 @@ export default function Setup() {
     <div className="min-h-screen bg-background flex items-center justify-center p-4 font-sans transition-colors duration-300">
       <div className="w-full max-w-md">
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 bg-card border border-border rounded-2xl flex items-center justify-center mb-4 shadow-sm">
-            <span className="text-primary font-bold text-xl">Z</span>
+          <div className="w-16 h-16 bg-card border border-border rounded-2xl flex items-center justify-center mb-4 shadow-sm overflow-hidden">
+            <img src="/miora.png" alt="Miora" className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-2xl font-bold leading-tight text-foreground tracking-tight">初始化 Zoaholic</h1>
+          <h1 className="text-2xl font-bold leading-tight text-foreground tracking-tight">初始化 Miora</h1>
           <p className="text-sm leading-relaxed text-muted-foreground mt-2">完成管理员初始化后，API Key 才能调用网关。</p>
         </div>
 

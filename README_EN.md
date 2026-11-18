@@ -1,7 +1,7 @@
-# Zoaholic
+# Miora
 
 <p align="center">
-  <img src="frontend/public/zoaholic.png" alt="Zoaholic Logo" width="200"/>
+  <img src="frontend/public/miora.png" alt="Miora Logo" width="200"/>
 </p>
 
 <p align="center">
@@ -14,26 +14,27 @@
 
 ## What is this?
 
-Zoaholic is a self-hostable LLM API gateway based on the excellent open-source project [uni-api](https://github.com/yym68686/uni-api).
+Miora is a self-hostable LLM API gateway built upon the excellent open-source projects [Zoaholic](https://github.com/HCPTangHY/Zoaholic) and [uni-api](https://github.com/yym68686/uni-api).
 
-As the LLM ecosystem evolves, OpenAI is no longer the only “standard”. Zoaholic introduces a **Multi‑Dialect architecture** that natively understands and translates between:
+As the LLM ecosystem evolves, OpenAI is no longer the only “standard”. Miora introduces a **Multi‑Dialect architecture** that natively understands and translates between:
 
 - OpenAI (`/v1/chat/completions`)
 - Anthropic Claude (`/v1/messages`)
 - Google Gemini (`/v1beta/...`)
 
-Zoaholic provides:
+Miora provides:
 
 - Multi-dialect translation: bidirectional protocol conversion, unified routing, SSE streaming
 - Provider & key management: configure `providers` / `api_keys` in the web console
-- Stats & logs: request stats and log viewer (optional DB)
+- Custom outbound headers & User-Agent: defaults to `Miora` identity and allows customizing `User-Agent` and arbitrary headers globally or per channel
+- Stats & logs: telemetry dashboard, per-key/channel/model analytics, and log viewer (optional DB)
 - Plugin system: interceptor-based request/response extensions
 
 ## Key Features
 
 ### Multi‑Dialect Gateway
 
-Zoaholic does NOT force everything into the OpenAI format. It supports protocol-level translation and streaming:
+Miora does NOT force everything into the OpenAI format. It supports protocol-level translation and streaming:
 
 - `/v1/chat/completions` (OpenAI) → route to Claude/Gemini backends
 - `/v1/messages` (Claude) → route to OpenAI/Gemini backends
@@ -117,7 +118,7 @@ Below are the most common and most error-prone environment variables for cloud d
 
 > TiDB Cloud (Serverless) usually **requires TLS**. If your URL doesn't include any SSL params, append `?ssl=true` or `?ssl_mode=VERIFY_IDENTITY`.
 
-Render usually injects `PORT` automatically; Zoaholic will read `PORT` as the listening port.
+Render usually injects `PORT` automatically; Miora will read `PORT` as the listening port.
 
 ### Recommended
 
@@ -125,7 +126,7 @@ Render usually injects `PORT` automatically; Zoaholic will read `PORT` as the li
 |---|---:|---|
 | `CONFIG_STORAGE` | `file` | Config source strategy: `auto\|db\|file\|url`. Default is `file` (`api.yaml` is the source of truth); for cloud you may use `auto` (file-first + sync to DB) or `db` (DB-first). |
 | `SYNC_CONFIG_TO_FILE` | `false` | Whether to write config back to `api.yaml`. Cloud file systems are often ephemeral/readonly, keep `false`. |
-| `JWT_SECRET` | (optional) | JWT signing key for admin console. **You can skip it**: on first `/setup`, Zoaholic auto-generates and persists `admin_user.jwt_secret` in DB and reuses it after restarts. For better security, set it explicitly. |
+| `JWT_SECRET` | (optional) | JWT signing key for admin console. **You can skip it**: on first `/setup`, Miora auto-generates and persists `admin_user.jwt_secret` in DB and reuses it after restarts. For better security, set it explicitly. |
 | `DISABLE_DATABASE` | `false` | Disable DB entirely. Cloud usually should NOT disable it (otherwise no config persistence / no stats). |
 
 If you use the repository `docker-compose.yml`, it now defaults to `CONFIG_STORAGE=db` and persists the SQLite database at `./data/stats.db`. This avoids the write problems caused by Docker single-file bind mounts for `api.yaml`.
@@ -157,7 +158,7 @@ If you still want file-based config, mount a directory and point `API_YAML_PATH`
 
 ## Config Persistence (Store config in DB)
 
-Zoaholic can persist the runtime config (previously `api.yaml`) into the database.
+Miora can persist the runtime config (previously `api.yaml`) into the database.
 
 Default behavior (`CONFIG_STORAGE=file`):
 
@@ -213,14 +214,17 @@ Please configure `api_keys` in the admin console first.
 
 ### 2) Can I skip JWT_SECRET?
 
-Yes. On first `/setup`, Zoaholic will auto-generate and persist a `jwt_secret` into the DB and reuse it on restarts.
+Yes. On first `/setup`, Miora will auto-generate and persist a `jwt_secret` into the DB and reuse it on restarts.
 For security/compliance, it is still recommended to explicitly set `JWT_SECRET` in your cloud environment.
 
 ---
 
-## Credits
+## Credits & Acknowledgements
 
-- Upstream project: [uni-api](https://github.com/yym68686/uni-api)
+Special thanks to the following open-source projects and their authors:
+
+- **[Zoaholic](https://github.com/HCPTangHY/Zoaholic)** (by [@HCPTangHY](https://github.com/HCPTangHY)) - Multi-dialect architecture, web admin console, and plugin ecosystem foundation.
+- **[uni-api](https://github.com/yym68686/uni-api)** (by [@yym68686](https://github.com/yym68686)) - Core high-availability routing and load-balancing engine foundation.
 
 ## License
 

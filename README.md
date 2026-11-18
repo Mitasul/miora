@@ -1,7 +1,7 @@
-# Zoaholic
+# Miora
 
 <p align="center">
-  <img src="frontend/public/zoaholic.png" alt="Zoaholic Logo" width="200"/>
+  <img src="frontend/public/miora.png" alt="Miora Logo" width="200"/>
 </p>
 
 <p align="center">
@@ -14,21 +14,22 @@
 
 ## 这是什么
 
-Zoaholic 是一个基于 [uni-api](https://github.com/yym68686/uni-api) 二次开发的下一代大模型 API 网关。面向高客制化的复杂需求，去除复杂的商业计费功能。
+Miora 是一个基于 [Zoaholic](https://github.com/HCPTangHY/Zoaholic) 与 [uni-api](https://github.com/yym68686/uni-api) 二次开发的下一代大模型 API 网关。面向高客制化的复杂需求，兼具高性能多方言路由与可视化全景遥测。
 
-随着大模型生态的发展，不再是 OpenAI 协议一统天下。Zoaholic 引入了**多方言（Multi-Dialect）架构**，原生理解并支持 OpenAI、Anthropic Claude 和 Google Gemini 三大主流 API 协议的双向转换与负载均衡。
+随着大模型生态的发展，不再是 OpenAI 协议一统天下。Miora 引入了**多方言（Multi-Dialect）架构**，原生理解并支持 OpenAI、Anthropic Claude 和 Google Gemini 三大主流 API 协议的双向转换与负载均衡。
 
-Zoaholic支持以下服务：
+Miora 支持以下服务：
 
 - 多方言协议：OpenAI / Claude / Gemini 请求格式双向转换、统一路由、流式 SSE 转发
 - 渠道与 Key 管理：前端控制台可视化配置 providers / api_keys
-- 统计与日志：请求统计、日志查询（可选数据库）
+- 自定义请求头与客户端标识：默认使用 `Miora` 标识向上游发起请求，并支持在全局或渠道级将 `User-Agent` 及任意请求头自定义为任意值
+- 统计与日志：全景遥测仪表盘、按 Key/渠道/模型用量分析、日志查询（可选数据库）
 - 插件系统：通过拦截器扩展请求/响应处理能力
 
 ## ✨ 核心特性
 
 ### 🗣️ 多方言网关 (Multi-Dialect)
-Zoaholic 不再强迫所有请求转换为 OpenAI 格式。网关内置了智能路由：
+Miora 不再强迫所有请求转换为 OpenAI 格式。网关内置了智能路由：
 - 请求 `/v1/chat/completions` (OpenAI 协议) 可以无缝转发给 Claude 或 Gemini 后端。
 - 请求 `/v1/messages` (Claude 协议) 可以无缝转发给 OpenAI 或 Gemini 后端。
 - 请求 `/v1beta/models/...` (Gemini 协议) 同理。
@@ -148,7 +149,7 @@ docker run --rm -p 8000:8000 \
 
 ## 配置与持久化（重点：配置入库）
 
-Zoaholic 支持把配置（原 `api.yaml`）持久化到数据库：
+Miora 支持把配置（原 `api.yaml`）持久化到数据库：
 
 - 默认 `CONFIG_STORAGE=file`
   - 启动时优先从 `api.yaml` 读取（`api.yaml` 作为权威配置）
@@ -204,9 +205,12 @@ python main.py
 
 ---
 
-## 🤝 致谢
+## 🤝 致谢 (Acknowledgements)
 
-- [uni-api](https://github.com/yym68686/uni-api) - 本项目的优秀上游基础
+本项目站在优秀的开源项目肩膀之上构建，特此向以下项目及作者致以诚挚感谢：
+
+- **[Zoaholic](https://github.com/HCPTangHY/Zoaholic)**（by [@HCPTangHY](https://github.com/HCPTangHY)）- 提供了强大的多方言（Multi-Dialect）双向转换架构、可视化控制台与动态插件体系基础。
+- **[uni-api](https://github.com/yym68686/uni-api)**（by [@yym68686](https://github.com/yym68686)）- 提供了高可用核心路由、负载均衡与渠道调度引擎基础。
 
 ## 🛠️ 开发工具
 

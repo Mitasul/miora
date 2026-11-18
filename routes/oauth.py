@@ -141,7 +141,7 @@ def _oauth_success_page(key_id: str, state: str, provider: str, already_exists: 
 <body>
 <div class="card">
   <h2>登录成功</h2>
-  <p>账号 <span class="email">{safe_key_id}</span> 已添加到 Zoaholic</p>
+  <p>账号 <span class="email">{safe_key_id}</span> 已添加到 Miora</p>
   <p>此窗口将在 3 秒后自动关闭</p>
 </div>
 <script nonce="{script_nonce}">

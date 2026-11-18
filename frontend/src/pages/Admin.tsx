@@ -1806,7 +1806,7 @@ export default function Admin() {
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold tracking-tight text-foreground">API 密钥管理</h1>
-          <p className="text-muted-foreground mt-1 text-sm sm:text-base">管理调用 Zoaholic 网关的下游 API Key、额度与权限</p>
+          <p className="text-muted-foreground mt-1 text-sm sm:text-base">管理调用 Miora 网关的下游 API Key、额度与权限</p>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
           <button onClick={fetchData} className="p-2 text-muted-foreground hover:text-foreground bg-card border border-border rounded-lg flex-shrink-0">

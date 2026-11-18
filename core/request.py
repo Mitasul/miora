@@ -89,7 +89,7 @@ def _prepend_system_prompt(request: RequestModel, system_prompt: str | None) -> 
         return RequestModel(**request_dict)
 
 
-async def get_payload(request: RequestModel, engine, provider, api_key=None):
+async def get_payload(request: RequestModel, engine, provider, api_key=None, global_preferences=None):
     """
     通过渠道注册中心获取请求适配器并构建 payload
     
@@ -98,6 +98,7 @@ async def get_payload(request: RequestModel, engine, provider, api_key=None):
         engine: 引擎类型 (openai, gemini, claude, azure, aws, vertex-gemini, vertex-claude, openrouter, cloudflare)
         provider: 提供商配置
         api_key: API 密钥
+        global_preferences: 全局偏好设置（可选，用于注入全局 User-Agent 与全局自定义请求头）
         
     Returns:
         tuple: (url, headers, payload)
@@ -176,7 +177,8 @@ async def get_payload(request: RequestModel, engine, provider, api_key=None):
         from .log_config import logger
 
         # 自定义请求头在插件之前应用，确保插件是最后一个修改 headers 的环节
-        from core.http_headers import apply_custom_headers
+        from core.http_headers import apply_custom_headers, apply_global_outbound_headers
+        apply_global_outbound_headers(headers, global_preferences, is_passthrough=False)
         apply_custom_headers(headers, safe_get(provider, "preferences", "headers", default={}))
 
         logger.debug(f"[get_payload] Before apply_request_interceptors, model={payload.get('model')}, enabled_plugins={enabled_plugins}")

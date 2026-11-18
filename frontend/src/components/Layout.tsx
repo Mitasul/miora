@@ -78,7 +78,7 @@ function NavContent({
         </div>
 
         <a
-          href="https://github.com/HCPTangHY/Zoaholic"
+          href="https://github.com/Mitasul/zoaholic-lite"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-3 px-4 py-2 text-sm text-muted-foreground hover:text-foreground transition-colors"
@@ -251,7 +251,7 @@ export default function Layout() {
     hasUpdate,
   };
 
-  const currentLabel = navItems.find(item => item.id === location.pathname)?.label || 'Zoaholic';
+  const currentLabel = navItems.find(item => item.id === location.pathname)?.label || 'Miora';
 
   return (
     <div className="flex h-screen bg-background text-foreground font-sans transition-colors duration-300">
@@ -259,8 +259,8 @@ export default function Layout() {
       <aside className="w-64 bg-card border-r border-border flex-col hidden md:flex">
         <div className="h-16 flex items-center px-6 border-b border-border">
           <div className="flex items-center gap-2">
-            <img src="/zoaholic.png" alt="Zoaholic" className="w-8 h-8 rounded-lg shadow-lg" />
-            <span className="font-bold text-lg tracking-tight">Zoaholic</span>
+            <img src="/miora.png" alt="Miora" className="w-8 h-8 rounded-lg shadow-lg" />
+            <span className="font-bold text-lg tracking-tight">Miora</span>
           </div>
         </div>
         <NavContent {...navProps} />
@@ -280,8 +280,8 @@ export default function Layout() {
       }`}>
         <div className="h-16 flex items-center justify-between px-6 border-b border-border">
           <div className="flex items-center gap-2">
-            <img src="/zoaholic.png" alt="Zoaholic" className="w-8 h-8 rounded-lg shadow-lg" />
-            <span className="font-bold text-lg tracking-tight">Zoaholic</span>
+            <img src="/miora.png" alt="Miora" className="w-8 h-8 rounded-lg shadow-lg" />
+            <span className="font-bold text-lg tracking-tight">Miora</span>
           </div>
           <button
             onClick={() => setMobileMenuOpen(false)}

@@ -740,7 +740,7 @@ async def get_models_by_groups(
     返回:
     {
         "models": [
-            {"id": "gpt-4o", "object": "model", "owned_by": "Zoaholic"},
+            {"id": "gpt-4o", "object": "model", "owned_by": "Miora"},
             ...
         ]
     }
@@ -804,7 +804,7 @@ async def get_models_by_groups(
                     "id": alias,
                     "object": "model",
                     "created": 1720524448858,
-                    "owned_by": "Zoaholic"
+                    "owned_by": "Miora"
                 }
                 all_models.append(model_info)
     

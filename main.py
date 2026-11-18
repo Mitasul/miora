@@ -731,7 +731,7 @@ async def lifespan(app: FastAPI):
 
         default_config = {
             "headers": {
-                "User-Agent": "curl/7.68.0",
+                "User-Agent": "Miora",
                 "Accept": "*/*",
                 "Accept-Encoding": "identity",
             },

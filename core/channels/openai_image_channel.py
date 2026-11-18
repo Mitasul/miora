@@ -125,7 +125,7 @@ async def get_image_payload(request, engine, provider, api_key=None):
             break
 
     # 从 messages 提取 prompt
-    prompt, images = _extract_prompt_and_images(request)
+    prompt, images = extract_prompt_and_images(request)
     if not prompt:
         prompt = "Generate an image"  # fallback
 

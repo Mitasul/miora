@@ -109,7 +109,7 @@ async def load_config(app=None):
             try:
                 default_config = {
                     "headers": {
-                        "User-Agent": "curl/7.68.0",
+                        "User-Agent": "Miora",
                         "Accept": "*/*",
                     },
                     "http2": True,

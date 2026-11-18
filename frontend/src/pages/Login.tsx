@@ -97,11 +97,11 @@ export default function Login() {
     <div className="min-h-screen bg-background flex items-center justify-center p-4 font-sans transition-colors duration-300">
       <div className="w-full max-w-md">
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 bg-card border border-border rounded-2xl flex items-center justify-center mb-4 shadow-sm">
-            <Activity className="w-8 h-8 text-primary" />
+          <div className="w-16 h-16 bg-card border border-border rounded-2xl flex items-center justify-center mb-4 shadow-sm overflow-hidden">
+            <img src="/miora.png" alt="Miora" className="w-full h-full object-cover" />
           </div>
-          <h1 className="text-2xl font-bold text-foreground tracking-tight">Zoaholic Gateway</h1>
-          <p className="text-muted-foreground mt-2">请输入 API Key 登录管理控制台</p>
+          <h1 className="text-2xl font-bold text-foreground tracking-tight">Miora Gateway</h1>
+          <p className="text-muted-foreground mt-2">请输入账号密码登录管理控制台</p>
         </div>
 
         {expiredHint && (
@@ -154,7 +154,7 @@ export default function Login() {
 
         <div className="flex justify-center mt-6">
           <a
-            href="https://github.com/HCPTangHY/Zoaholic"
+            href="https://github.com/Mitasul/zoaholic-lite"
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
